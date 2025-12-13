@@ -7,6 +7,9 @@ langchain-voyageai==0.2.0
 pypdf==3.17.0
 tiktoken==0.7.0
 
+# Math & Vectors
+numpy>=1.24.0
+
 # Configuration
 python-dotenv==1.0.0
 pydantic>=2.7.4
