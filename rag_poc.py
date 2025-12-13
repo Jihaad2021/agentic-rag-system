@@ -11,6 +11,8 @@ from pypdf import PdfReader
 from dotenv import load_dotenv
 import tiktoken
 from langchain_voyageai import VoyageAIEmbeddings
+from langchain_anthropic import ChatAnthropic
+from langchain.prompts import ChatPromptTemplate
 import numpy as np
 
 # Load environment
@@ -345,7 +347,165 @@ class SimpleVectorStore:
         norm2 = np.linalg.norm(vec2)
         
         return dot_product / (norm1 * norm2)
+
+class AnswerGenerator:
+    """Generate answers using Claude with retrieved context."""
     
+    def __init__(self, model: str = "claude-3-haiku-20240307"):
+        """
+        Initialize answer generator.
+        
+        Args:
+            model: Claude model to use
+        """
+        self.llm = ChatAnthropic(
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            model=model,
+            temperature=0  # Deterministic for consistency
+        )
+        print(f"🤖 AnswerGenerator initialized (model: {model})")
+    
+    def generate(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+        max_chunks: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Generate answer from query and retrieved chunks.
+        
+        Args:
+            query: User question
+            chunks: Retrieved chunks (with scores)
+            max_chunks: Maximum chunks to use for context
+            
+        Returns:
+            Dictionary with answer, citations, and metadata
+        """
+        print(f"\n🤖 Generating answer for: '{query}'")
+        
+        # Limit chunks
+        top_chunks = chunks[:max_chunks]
+        
+        # Build context from chunks
+        context = self._build_context(top_chunks)
+        
+        # Build prompt
+        prompt = self._build_prompt(query, context)
+        
+        # Generate answer
+        print(f"   Using {len(top_chunks)} chunks as context")
+        print(f"   Calling Claude...")
+        
+        response = self.llm.invoke(prompt)
+        answer_text = response.content
+        
+        # Extract citations
+        citations = self._extract_citations(answer_text, top_chunks)
+        
+        result = {
+            "query": query,
+            "answer": answer_text,
+            "citations": citations,
+            "chunks_used": len(top_chunks),
+            "model": self.llm.model
+        }
+        
+        print(f"✅ Answer generated ({len(answer_text)} chars)")
+        
+        return result
+    
+    def _build_context(self, chunks: List[Dict[str, Any]]) -> str:
+        """
+        Build context string from chunks.
+        
+        Args:
+            chunks: List of chunks with metadata
+            
+        Returns:
+            Formatted context string
+        """
+        context_parts = []
+        
+        for i, chunk in enumerate(chunks, 1):
+            # Add chunk with source reference
+            chunk_text = f"[Source {i}]\n{chunk['text']}\n"
+            context_parts.append(chunk_text)
+        
+        return "\n".join(context_parts)
+    
+    def _build_prompt(self, query: str, context: str) -> str:
+        """
+        Build prompt for Claude.
+        
+        Args:
+            query: User question
+            context: Context from retrieved chunks
+            
+        Returns:
+            Complete prompt string
+        """
+        prompt_template = """You are a helpful AI assistant answering questions based on provided context.
+
+Context:
+{context}
+
+Question: {query}
+
+Instructions:
+1. Answer the question using ONLY the information in the context above
+2. If the context doesn't contain enough information, say "I don't have enough information to answer this question."
+3. Be concise and direct
+4. When using information from a source, mention it like: "According to Source 1, ..."
+5. Do not make up information not present in the context
+
+Answer:"""
+
+        return prompt_template.format(context=context, query=query)
+    
+    def _extract_citations(
+        self,
+        answer: str,
+        chunks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract which sources were cited in the answer.
+        
+        Args:
+            answer: Generated answer text
+            chunks: Chunks that were provided as context
+            
+        Returns:
+            List of citations with chunk info
+        """
+        citations = []
+        
+        # Simple citation detection: look for "Source N" mentions
+        for i, chunk in enumerate(chunks, 1):
+            source_mention = f"Source {i}"
+            
+            if source_mention in answer:
+                citations.append({
+                    "source_number": i,
+                    "chunk_id": chunk.get('chunk_id', f'chunk_{i}'),
+                    "text_preview": chunk['text'][:100] + "...",
+                    "score": chunk.get('score', 0.0)
+                })
+        
+        # If no explicit citations found, assume all chunks were used
+        if not citations:
+            citations = [
+                {
+                    "source_number": i,
+                    "chunk_id": chunk.get('chunk_id', f'chunk_{i}'),
+                    "text_preview": chunk['text'][:100] + "...",
+                    "score": chunk.get('score', 0.0)
+                }
+                for i, chunk in enumerate(chunks, 1)
+            ]
+        
+        return citations
+
 def test_chunking():
     """Test text chunking functionality."""
     
@@ -445,10 +605,10 @@ def test_error_handling():
     print("\n✅ All error handling tests passed!")
 
 def test_end_to_end_rag():
-    """Test complete RAG pipeline."""
+    """Test complete RAG pipeline with answer generation."""
     
     print("\n" + "=" * 60)
-    print("TESTING END-TO-END RAG PIPELINE")
+    print("TESTING COMPLETE RAG PIPELINE (WITH ANSWER GENERATION)")
     print("=" * 60)
     
     # 1. Load PDF
@@ -477,106 +637,145 @@ def test_end_to_end_rag():
     vector_store = SimpleVectorStore()
     vector_store.add_chunks(chunks)
     
-    # 5. Query
-    print("\n5️⃣ QUERYING...")
+    # 5. Initialize generator
+    print("\n5️⃣ INITIALIZING ANSWER GENERATOR...")
+    generator = AnswerGenerator()
+    
+    # 6. Query and generate answers
+    print("\n6️⃣ QUERYING AND GENERATING ANSWERS...")
     test_queries = [
         "What is this document about?",
-        "dummy pdf file"
+        "Summarize the main content"
     ]
     
     for query in test_queries:
-        print(f"\n📝 Query: '{query}'")
+        print("\n" + "-" * 60)
+        print(f"📝 Query: '{query}'")
+        print("-" * 60)
         
         # Embed query
         query_embedding = embedder.embed_query(query)
         
-        # Search
+        # Search for relevant chunks
         results = vector_store.search(query_embedding, top_k=3)
         
-        # Display results
-        print(f"\n   Top 3 results:")
+        print(f"\n🔍 Retrieved {len(results)} chunks:")
         for i, result in enumerate(results, 1):
-            print(f"\n   {i}. Score: {result['score']:.4f}")
-            print(f"      Text: {result['text'][:100]}...")
+            print(f"   {i}. Score: {result['score']:.4f}")
+            print(f"      Preview: {result['text'][:80]}...")
+        
+        # Generate answer
+        answer_result = generator.generate(query, results, max_chunks=3)
+        
+        # Display answer
+        print(f"\n💬 ANSWER:")
+        print(f"   {answer_result['answer']}")
+        
+        print(f"\n📚 CITATIONS ({len(answer_result['citations'])}):")
+        for citation in answer_result['citations']:
+            print(f"   - Source {citation['source_number']}: {citation['text_preview']}")
     
     print("\n" + "=" * 60)
-    print("✅ END-TO-END RAG PIPELINE WORKING!")
+    print("✅ COMPLETE RAG PIPELINE WORKING!")
+    print("=" * 60)
+    print("\nPipeline Summary:")
+    print("  PDF → Chunks → Embeddings → Search → Generate → Answer ✅")
+
+def demo_rag_qa():
+    """
+    Simple demo: Ask questions about a PDF.
+    
+    This is a user-friendly demo function.
+    """
+    print("\n" + "=" * 60)
+    print("🎯 RAG Q&A DEMO")
+    print("=" * 60)
+    
+    # Check if PDF exists
+    test_file = "data/uploads/sample.pdf"
+    if not os.path.exists(test_file):
+        print(f"\n❌ No PDF found at: {test_file}")
+        print("   Please add a PDF file first.")
+        return
+    
+    print(f"\n📄 Loading PDF: {test_file}")
+    
+    # Build RAG pipeline
+    loader = PDFLoader()
+    chunker = TextChunker(chunk_size=500, chunk_overlap=50)
+    embedder = Embedder()
+    vector_store = SimpleVectorStore()
+    generator = AnswerGenerator()
+    
+    # Process PDF
+    text = loader.load(test_file)
+    chunks = chunker.chunk_text(text)
+    chunks = embedder.embed_chunks(chunks)
+    vector_store.add_chunks(chunks)
+    
+    print("\n✅ RAG system ready!")
+    print("\n" + "=" * 60)
+    
+    # Interactive Q&A
+    questions = [
+        "What is the main topic of this document?",
+        "Give me a brief summary",
+        "What are the key points?"
+    ]
+    
+    for i, question in enumerate(questions, 1):
+        print(f"\n❓ Question {i}: {question}")
+        print("-" * 60)
+        
+        # RAG pipeline
+        query_embedding = embedder.embed_query(question)
+        relevant_chunks = vector_store.search(query_embedding, top_k=5)
+        answer_result = generator.generate(question, relevant_chunks)
+        
+        # Display
+        print(f"\n💡 Answer:\n{answer_result['answer']}\n")
+        
+        if answer_result['citations']:
+            print(f"📌 Sources used: {len(answer_result['citations'])} chunks")
+    
+    print("\n" + "=" * 60)
+    print("✅ Demo complete!")
     print("=" * 60)
 
 def main():
-    """Main function to test PDF loading and chunking."""
+    """Main function - comprehensive RAG testing."""
     
     print("=" * 60)
-    print("RAG POC - PHASE 1 DAY 2: PDF LOADING + CHUNKING")
+    print("RAG POC - PHASE 1 DAY 3: COMPLETE RAG WITH GENERATION")
     print("=" * 60)
     
-    # Initialize loader
-    loader = PDFLoader()
+    # Test 1: Basic chunking
+    print("\n[Test 1] Basic Chunking")
+    test_chunking()
     
-    # Test with a sample PDF
-    test_file = "data/uploads/sample.pdf"
+    # Test 2: Complete RAG pipeline
+    print("\n[Test 2] Complete RAG Pipeline")
+    test_end_to_end_rag()
     
-    if not os.path.exists(test_file):
-        print(f"\n⚠️  Test file not found: {test_file}")
-        print("\n📝 Instructions:")
-        print("   1. Download or copy a sample PDF")
-        print("   2. Save it as: data/uploads/sample.pdf")
-        print("   3. Run this script again")
-        print("\n💡 Tip: Use any PDF (5-20 pages recommended)")
-        print("\n🧪 Running chunking test with sample text instead...")
-        test_chunking()
-        return
+    # Test 3: Error handling
+    print("\n[Test 3] Error Handling")
+    test_error_handling()
     
-    try:
-        # Load PDF
-        text = loader.load(test_file)
-        
-        # Display sample
-        print("\n" + "=" * 60)
-        print("EXTRACTED TEXT SAMPLE (first 500 chars):")
-        print("=" * 60)
-        print(text[:500])
-        if len(text) > 500:
-            print("...")
-        
-        print("\n" + "=" * 60)
-        print("STATISTICS:")
-        print("=" * 60)
-        print(f"Total characters: {len(text):,}")
-        print(f"Total words: {len(text.split()):,}")
-        
-        # Chunk the text
-        chunker = TextChunker(chunk_size=500, chunk_overlap=50)
-        token_count = chunker.count_tokens(text)
-        print(f"Total tokens: {token_count:,}")
-        
-        chunks = chunker.chunk_text(text)
-        
-        # Display chunk info
-        print("\n" + "=" * 60)
-        print("CHUNKS:")
-        print("=" * 60)
-        print(f"Total chunks: {len(chunks)}")
-        print(f"Average tokens per chunk: {sum(c['token_count'] for c in chunks) / len(chunks):.1f}")
-        
-        # Show first 2 chunks
-        print(f"\n📋 First 2 chunks:")
-        for chunk in chunks[:2]:
-            print(f"\n{chunk['chunk_id']}:")
-            print(f"  Tokens: {chunk['token_count']}")
-            print(f"  Text: {chunk['text'][:100]}...")
-        
-        print("\n✅ PDF loading and chunking successful!")
-        
-        # Run additional tests
-        test_error_handling()
-        
-        # Test full RAG pipeline
-        test_end_to_end_rag()
-        
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        raise
+    # Demo: Interactive Q&A
+    print("\n[Demo] Interactive Q&A")
+    demo_rag_qa()
+    
+    print("\n" + "=" * 60)
+    print("🎉 ALL TESTS COMPLETE - DAY 3!")
+    print("=" * 60)
+    print("\n📊 System Status:")
+    print("  ✅ PDF Loading")
+    print("  ✅ Text Chunking")
+    print("  ✅ Embeddings (Voyage AI)")
+    print("  ✅ Vector Search")
+    print("  ✅ Answer Generation (Claude)")
+    print("  ✅ Citations")
+    print("\n🚀 Ready for Streamlit UI (Day 4-5)")
 
 
 if __name__ == "__main__":
