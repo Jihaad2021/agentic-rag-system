@@ -10,7 +10,7 @@ from datetime import datetime
 
 # Import our RAG components
 from rag_poc import (
-    PDFLoader,
+    DocumentLoader,
     TextChunker,
     Embedder,
     SimpleVectorStore,
@@ -102,19 +102,30 @@ def sidebar():
     with st.sidebar:
         st.header("📁 Document Management")
         
-        # File uploader
-        st.subheader("Upload PDF")
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file",
-            type=['pdf'],
-            help="Upload a PDF document to analyze",
-            label_visibility="collapsed"
-        )
+        # File uploader - MULTI-FORMAT
+        st.subheader("Upload Document")
         
+        uploaded_file = st.file_uploader(
+            "Choose a file",
+            type=['pdf', 'docx', 'txt'],  # ← UPDATED
+            help="Upload PDF, Word (DOCX), or Text (TXT) files",
+            label_visibility="collapsed"
+        )        
+        # Show file info if uploaded
         if uploaded_file is not None:
+            # File details
+            file_size = uploaded_file.size / 1024  # KB
+            file_type = uploaded_file.type
+            
+            st.info(f"""
+            📄 **{uploaded_file.name}**
+            - Type: {file_type}
+            - Size: {file_size:.1f} KB
+            """)
+            
             if st.button("📤 Process Document", type="primary"):
                 process_uploaded_file(uploaded_file)
-        
+           
         st.divider()
 
         # Export chat
@@ -146,16 +157,30 @@ def sidebar():
         
         if st.session_state.documents:
             for i, doc in enumerate(st.session_state.documents):
+                # Get file icon based on type
+                icon = {
+                    '.PDF': '📕',
+                    '.DOCX': '📘', 
+                    '.TXT': '📄'
+                }.get(doc.get('type', '.PDF'), '📄')
+                
                 col1, col2 = st.columns([3, 1])
                 
                 with col1:
-                    st.text(f"📄 {doc['name']}")
-                    st.caption(f"{doc['pages']} pages • {doc['chunks']} chunks")
+                    st.text(f"{icon} {doc['name']}")
+                    st.caption(
+                        f"{doc.get('type', 'PDF')} • "
+                        f"{doc['pages']} pages • "
+                        f"{doc['chunks']} chunks"
+                    )
                 
                 with col2:
                     if st.button("🗑️", key=f"delete_{i}", help="Delete document"):
                         delete_document(i)
-                        st.experimental_rerun()
+                        try:
+                            st.rerun()
+                        except AttributeError:
+                            st.experimental_rerun()
         else:
             st.info("No documents uploaded yet")
         
@@ -202,7 +227,7 @@ def export_chat_history():
     )
 
 def process_uploaded_file(uploaded_file):
-    """Process uploaded PDF file with progress tracking."""
+    """Process uploaded document file with progress tracking."""
     
     try:
         st.session_state.processing = True
@@ -215,6 +240,9 @@ def process_uploaded_file(uploaded_file):
         file_path = upload_dir / uploaded_file.name
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
+        
+        # Get file extension for display
+        file_ext = file_path.suffix.upper()
         
         # Progress bar
         progress_bar = st.progress(0)
@@ -230,11 +258,11 @@ def process_uploaded_file(uploaded_file):
             st.session_state.generator = AnswerGenerator()
             st.session_state.rag_initialized = True
         
-        # Step 2: Load PDF
-        status_text.text("📄 Loading PDF...")
+        # Step 2: Load document
+        status_text.text(f"📄 Loading {file_ext} file...")
         progress_bar.progress(25)
         
-        loader = PDFLoader()
+        loader = DocumentLoader()  # ← CHANGED
         text = loader.load(str(file_path))
         
         # Step 3: Chunk
@@ -257,11 +285,12 @@ def process_uploaded_file(uploaded_file):
         st.session_state.vector_store.add_chunks(chunks)
         
         # Step 6: Complete
-        page_count = len(text) // 2000
+        page_count = loader.count_pages(str(file_path))  # ← UPDATED
         
         st.session_state.documents.append({
             'name': uploaded_file.name,
             'path': str(file_path),
+            'type': file_ext,  # ← NEW
             'pages': page_count,
             'chunks': len(chunks),
             'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -270,15 +299,18 @@ def process_uploaded_file(uploaded_file):
         progress_bar.progress(100)
         status_text.text("✅ Processing complete!")
         
-        st.success(f"✅ Successfully processed: {uploaded_file.name}")
-        st.balloons()  # Celebration!
+        st.success(f"✅ Successfully processed {file_ext}: {uploaded_file.name}")
+        st.balloons()
         
         st.session_state.processing = False
         
-        # Auto-rerun after 2 seconds
+        # Auto-rerun
         import time
         time.sleep(2)
-        st.experimental_rerun()
+        try:
+            st.rerun()
+        except AttributeError:
+            st.experimental_rerun()
         
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")

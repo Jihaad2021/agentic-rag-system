@@ -13,25 +13,26 @@ import tiktoken
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_anthropic import ChatAnthropic
 from langchain.prompts import ChatPromptTemplate
+from docx import Document as DocxDocument
 import numpy as np
 
 # Load environment
 load_dotenv()
 
 
-class PDFLoader:
-    """Load and extract text from PDF files."""
+class DocumentLoader:
+    """Load and extract text from multiple file formats."""
     
     def __init__(self):
-        """Initialize PDF loader."""
-        self.supported_formats = ['.pdf']
+        """Initialize document loader."""
+        self.supported_formats = ['.pdf', '.docx', '.txt']
     
     def load(self, file_path: str) -> str:
         """
-        Load PDF and extract all text.
+        Load document and extract all text.
         
         Args:
-            file_path: Path to PDF file
+            file_path: Path to document file
             
         Returns:
             Extracted text as string
@@ -47,18 +48,28 @@ class PDFLoader:
         # Validate file format
         file_ext = os.path.splitext(file_path)[1].lower()
         if file_ext not in self.supported_formats:
+            raise ValueError(
+                f"Unsupported format: {file_ext}. "
+                f"Supported: {', '.join(self.supported_formats)}"
+            )
+        
+        print(f"📄 Loading {file_ext.upper()} file: {file_path}")
+        
+        # Route to appropriate loader
+        if file_ext == '.pdf':
+            text = self._load_pdf(file_path)
+        elif file_ext == '.docx':
+            text = self._load_docx(file_path)
+        elif file_ext == '.txt':
+            text = self._load_txt(file_path)
+        else:
             raise ValueError(f"Unsupported format: {file_ext}")
         
-        print(f"📄 Loading PDF: {file_path}")
-        
-        # Load PDF
-        text = self._extract_text(file_path)
-        
-        print(f"✅ Extracted {len(text)} characters from {self._count_pages(file_path)} pages")
+        print(f"✅ Extracted {len(text)} characters")
         
         return text
     
-    def _extract_text(self, file_path: str) -> str:
+    def _load_pdf(self, file_path: str) -> str:
         """
         Extract text from PDF using PyPDF.
         
@@ -70,31 +81,69 @@ class PDFLoader:
         """
         text_parts = []
         
-        # Open PDF
         reader = PdfReader(file_path)
         
-        # Extract text from each page
         for page_num, page in enumerate(reader.pages, start=1):
             page_text = page.extract_text()
-            
-            # Clean text
             page_text = self._clean_text(page_text)
             
-            if page_text.strip():  # Only add non-empty pages
+            if page_text.strip():
                 text_parts.append(page_text)
                 print(f"  Page {page_num}: {len(page_text)} chars")
         
-        # Combine all pages
-        full_text = "\n\n".join(text_parts)
+        return "\n\n".join(text_parts)
+    
+    def _load_docx(self, file_path: str) -> str:
+        """
+        Extract text from DOCX using python-docx.
         
-        return full_text
+        Args:
+            file_path: Path to DOCX file
+            
+        Returns:
+            Combined text from all paragraphs
+        """
+        text_parts = []
+        
+        doc = DocxDocument(file_path)
+        
+        for i, paragraph in enumerate(doc.paragraphs, start=1):
+            para_text = paragraph.text
+            para_text = self._clean_text(para_text)
+            
+            if para_text.strip():
+                text_parts.append(para_text)
+        
+        print(f"  Extracted {len(doc.paragraphs)} paragraphs")
+        
+        return "\n\n".join(text_parts)
+    
+    def _load_txt(self, file_path: str) -> str:
+        """
+        Extract text from TXT file.
+        
+        Args:
+            file_path: Path to TXT file
+            
+        Returns:
+            File content as string
+        """
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+        
+        text = self._clean_text(text)
+        
+        lines = len(text.splitlines())
+        print(f"  Extracted {lines} lines")
+        
+        return text
     
     def _clean_text(self, text: str) -> str:
         """
         Clean extracted text.
         
         Args:
-            text: Raw text from PDF
+            text: Raw text
             
         Returns:
             Cleaned text
@@ -107,19 +156,37 @@ class PDFLoader:
         
         return text
     
-    def _count_pages(self, file_path: str) -> int:
+    def count_pages(self, file_path: str) -> int:
         """
-        Count pages in PDF.
+        Count pages/sections in document.
         
         Args:
-            file_path: Path to PDF file
+            file_path: Path to document
             
         Returns:
-            Number of pages
+            Number of pages or estimated sections
         """
-        reader = PdfReader(file_path)
-        return len(reader.pages)
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        if file_ext == '.pdf':
+            reader = PdfReader(file_path)
+            return len(reader.pages)
+        
+        elif file_ext == '.docx':
+            doc = DocxDocument(file_path)
+            # Estimate pages (rough: 500 words per page)
+            total_words = sum(len(p.text.split()) for p in doc.paragraphs)
+            return max(1, total_words // 500)
+        
+        elif file_ext == '.txt':
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = len(f.readlines())
+            # Estimate pages (rough: 50 lines per page)
+            return max(1, lines // 50)
+        
+        return 1
 
+PDFLoader = DocumentLoader
 
 class TextChunker:
     """Split text into chunks with token counting."""
