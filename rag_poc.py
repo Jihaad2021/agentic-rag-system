@@ -1,8 +1,17 @@
 """
-RAG Proof of Concept - Phase 1 Day 2
-PDF loading, text chunking, and embeddings.
+Agentic RAG System - Core Components
+Phase 1: Traditional RAG Foundation
 
-Note: Using Claude 3 Haiku (claude-3-haiku-20240307) for API calls.
+This module provides the core components for a Retrieval-Augmented Generation system:
+- DocumentLoader: Multi-format document loading (PDF, DOCX, TXT)
+- TextChunker: Intelligent text chunking with overlap
+- Embedder: Voyage AI embedding generation
+- SimpleVectorStore: In-memory vector storage and search
+- AnswerGenerator: Claude-powered answer generation with citations
+
+Author: [Your Name]
+Date: December 2024
+Version: 1.0 (Week 1 Complete)
 """
 
 import os
