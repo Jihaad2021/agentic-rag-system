@@ -1,6 +1,6 @@
 """
 Streamlit Web Interface for Agentic RAG System
-Phase 1 Day 4 - Basic UI
+Phase 1 Day 8 - Hierarchical Chunking Integration
 """
 
 import streamlit as st
@@ -8,14 +8,19 @@ import os
 from pathlib import Path
 from datetime import datetime
 
-# Import our RAG components
+# Import RAG components
 from rag_poc import (
     DocumentLoader,
-    TextChunker,
     Embedder,
-    SimpleVectorStore,
     AnswerGenerator
 )
+
+# Import hierarchical components ← NEW
+from src.ingestion.hierarchical_chunker import HierarchicalChunker
+from src.storage.hierarchical_store import HierarchicalVectorStore
+
+# Keep old components for comparison
+from rag_poc import TextChunker, SimpleVectorStore
 
 # Page configuration
 st.set_page_config(
@@ -68,16 +73,22 @@ def init_session_state():
     if 'documents' not in st.session_state:
         st.session_state.documents = []
     
-    # RAG components (initialized once)
+    # RAG components - HIERARCHICAL ← UPDATED
     if 'rag_initialized' not in st.session_state:
         st.session_state.rag_initialized = False
         st.session_state.vector_store = None
         st.session_state.embedder = None
         st.session_state.generator = None
+        st.session_state.parent_chunks = []  # ← NEW
+        st.session_state.child_chunks = []   # ← NEW
     
     # Processing status
     if 'processing' not in st.session_state:
         st.session_state.processing = False
+    
+    # Chunking mode selection ← NEW
+    if 'chunking_mode' not in st.session_state:
+        st.session_state.chunking_mode = 'hierarchical'  # 'flat' or 'hierarchical'
 
 
 def display_header():
@@ -102,18 +113,48 @@ def sidebar():
     with st.sidebar:
         st.header("📁 Document Management")
         
-        # File uploader - MULTI-FORMAT
+        # ============================================
+        # CHUNKING MODE SELECTOR (NEW)
+        # ============================================
+        st.subheader("⚙️ Chunking Mode")
+        chunking_mode = st.radio(
+            "Select chunking strategy",
+            options=['hierarchical', 'flat'],
+            format_func=lambda x: {
+                'hierarchical': '🔺 Hierarchical (Parent-Child)',
+                'flat': '📊 Flat (Single Level)'
+            }[x],
+            help="""
+            **Hierarchical**: Better context, higher accuracy (recommended)
+            **Flat**: Simpler, faster processing
+            """,
+            key='chunking_mode_selector'
+        )
+        
+        st.session_state.chunking_mode = chunking_mode
+        
+        # Show mode info
+        if chunking_mode == 'hierarchical':
+            st.info("📈 Parents: 2000 tokens | Children: 500 tokens")
+        else:
+            st.info("📊 Chunks: 500 tokens")
+        
+        st.divider()
+        
+        # ============================================
+        # FILE UPLOADER (EXISTING - KEPT)
+        # ============================================
         st.subheader("Upload Document")
         
         uploaded_file = st.file_uploader(
             "Choose a file",
-            type=['pdf', 'docx', 'txt'],  # ← UPDATED
+            type=['pdf', 'docx', 'txt'],
             help="Upload PDF, Word (DOCX), or Text (TXT) files",
             label_visibility="collapsed"
-        )        
+        )
+        
         # Show file info if uploaded
         if uploaded_file is not None:
-            # File details
             file_size = uploaded_file.size / 1024  # KB
             file_type = uploaded_file.type
             
@@ -125,34 +166,12 @@ def sidebar():
             
             if st.button("📤 Process Document", type="primary"):
                 process_uploaded_file(uploaded_file)
-           
+        
         st.divider()
-
-        # Export chat
-        if st.session_state.messages:
-            st.subheader("💾 Export")
-            
-            if st.button("📥 Download Chat History"):
-                export_chat_history()
-
-        # Sample questions (only show if documents uploaded)
-        if st.session_state.documents:
-            st.subheader("💡 Sample Questions")
-            
-            sample_questions = [
-                "What is this document about?",
-                "Summarize the main points",
-                "What are the key findings?",
-                "Give me specific details"
-            ]
-            
-            for question in sample_questions:
-                if st.button(f"💬 {question}", key=f"sample_{question}"):
-                    # Trigger chat with this question
-                    st.session_state.sample_query = question
-                    st.experimental_rerun()
-
-        # Document list
+        
+        # ============================================
+        # DOCUMENT LIST (UPDATED WITH HIERARCHICAL INFO)
+        # ============================================
         st.subheader("📄 Uploaded Documents")
         
         if st.session_state.documents:
@@ -168,11 +187,22 @@ def sidebar():
                 
                 with col1:
                     st.text(f"{icon} {doc['name']}")
-                    st.caption(
-                        f"{doc.get('type', 'PDF')} • "
-                        f"{doc['pages']} pages • "
-                        f"{doc['chunks']} chunks"
-                    )
+                    
+                    # Show chunking info (UPDATED)
+                    mode = doc.get('chunking_mode', 'flat')
+                    if mode == 'hierarchical':
+                        st.caption(
+                            f"🔺 Hierarchical • "
+                            f"{doc.get('parents', 0)} parents • "
+                            f"{doc['chunks']} children"
+                        )
+                    else:
+                        st.caption(
+                            f"📊 Flat • "
+                            f"{doc.get('type', 'PDF')} • "
+                            f"{doc['pages']} pages • "
+                            f"{doc['chunks']} chunks"
+                        )
                 
                 with col2:
                     if st.button("🗑️", key=f"delete_{i}", help="Delete document"):
@@ -186,7 +216,43 @@ def sidebar():
         
         st.divider()
         
-        # System status
+        # ============================================
+        # SAMPLE QUESTIONS (EXISTING - KEPT)
+        # ============================================
+        if st.session_state.documents:
+            st.subheader("💡 Sample Questions")
+            
+            sample_questions = [
+                "What is this document about?",
+                "Summarize the main points",
+                "What are the key findings?",
+                "Give me specific details"
+            ]
+            
+            for question in sample_questions:
+                if st.button(f"💬 {question}", key=f"sample_{question}"):
+                    st.session_state.sample_query = question
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+        
+        st.divider()
+        
+        # ============================================
+        # EXPORT CHAT (EXISTING - KEPT)
+        # ============================================
+        if st.session_state.messages:
+            st.subheader("💾 Export")
+            
+            if st.button("📥 Download Chat History"):
+                export_chat_history()
+        
+        st.divider()
+        
+        # ============================================
+        # SYSTEM STATUS (EXISTING - KEPT)
+        # ============================================
         st.subheader("⚙️ System Status")
         
         if st.session_state.rag_initialized:
@@ -197,7 +263,10 @@ def sidebar():
         # Clear chat button
         if st.button("🗑️ Clear Chat History"):
             st.session_state.messages = []
-            st.experimental_rerun()
+            try:
+                st.rerun()
+            except AttributeError:
+                st.experimental_rerun()
 
 def export_chat_history():
     """Export chat history as text file."""
@@ -227,7 +296,7 @@ def export_chat_history():
     )
 
 def process_uploaded_file(uploaded_file):
-    """Process uploaded document file with progress tracking."""
+    """Process uploaded document with hierarchical chunking."""
     
     try:
         st.session_state.processing = True
@@ -241,7 +310,6 @@ def process_uploaded_file(uploaded_file):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         
-        # Get file extension for display
         file_ext = file_path.suffix.upper()
         
         # Progress bar
@@ -254,7 +322,13 @@ def process_uploaded_file(uploaded_file):
         
         if not st.session_state.rag_initialized:
             st.session_state.embedder = Embedder()
-            st.session_state.vector_store = SimpleVectorStore()
+            
+            # Initialize appropriate vector store
+            if st.session_state.chunking_mode == 'hierarchical':
+                st.session_state.vector_store = HierarchicalVectorStore()
+            else:
+                st.session_state.vector_store = SimpleVectorStore()
+            
             st.session_state.generator = AnswerGenerator()
             st.session_state.rag_initialized = True
         
@@ -262,49 +336,95 @@ def process_uploaded_file(uploaded_file):
         status_text.text(f"📄 Loading {file_ext} file...")
         progress_bar.progress(25)
         
-        loader = DocumentLoader()  # ← CHANGED
+        loader = DocumentLoader()
         text = loader.load(str(file_path))
         
-        # Step 3: Chunk
+        # Step 3: Chunk - HIERARCHICAL OR FLAT
         status_text.text("✂️ Chunking text...")
         progress_bar.progress(40)
         
-        chunker = TextChunker(chunk_size=500, chunk_overlap=50)
-        chunks = chunker.chunk_text(text)
+        if st.session_state.chunking_mode == 'hierarchical':
+            # Hierarchical chunking
+            chunker = HierarchicalChunker(
+                parent_size=2000,
+                child_size=500,
+                child_overlap=50
+            )
+            parent_chunks, child_chunks = chunker.chunk_text(text)
+            
+            status_text.text(f"✂️ Created {len(parent_chunks)} parents, {len(child_chunks)} children...")
+            
+        else:
+            # Flat chunking
+            chunker = TextChunker(chunk_size=500, chunk_overlap=50)
+            chunks = chunker.chunk_text(text)
+            
+            # Convert to Chunk objects for compatibility
+            from src.ingestion.hierarchical_chunker import Chunk
+            parent_chunks = []
+            child_chunks = [
+                Chunk(
+                    chunk_id=c['chunk_id'],
+                    text=c['text'],
+                    tokens=c.get('tokens', []),
+                    token_count=c['token_count'],
+                    start_idx=c['start_idx'],
+                    end_idx=c['end_idx'],
+                    chunk_type='child'
+                )
+                for c in chunks
+            ]
         
         # Step 4: Embeddings
-        status_text.text(f"🔢 Generating embeddings ({len(chunks)} chunks)...")
+        total_chunks = len(parent_chunks) + len(child_chunks)
+        status_text.text(f"🔢 Generating embeddings ({total_chunks} chunks)...")
         progress_bar.progress(60)
         
-        chunks = st.session_state.embedder.embed_chunks(chunks)
+        # Embed parents
+        if parent_chunks:
+            for parent in parent_chunks:
+                parent.embedding = st.session_state.embedder.embed_query(parent.text)
+        
+        # Embed children
+        for child in child_chunks:
+            child.embedding = st.session_state.embedder.embed_query(child.text)
         
         # Step 5: Store
         status_text.text("💾 Storing in vector database...")
         progress_bar.progress(85)
         
-        st.session_state.vector_store.add_chunks(chunks)
+        if st.session_state.chunking_mode == 'hierarchical':
+            st.session_state.vector_store.add_chunks(parent_chunks, child_chunks)
+            # Store for UI display
+            st.session_state.parent_chunks.extend(parent_chunks)
+            st.session_state.child_chunks.extend(child_chunks)
+        else:
+            # For flat mode, use old add_chunks method
+            for chunk in child_chunks:
+                st.session_state.vector_store.chunks.append(chunk)
         
         # Step 6: Complete
-        page_count = loader.count_pages(str(file_path))  # ← UPDATED
+        page_count = loader.count_pages(str(file_path))
         
         st.session_state.documents.append({
             'name': uploaded_file.name,
             'path': str(file_path),
-            'type': file_ext,  # ← NEW
+            'type': file_ext,
             'pages': page_count,
-            'chunks': len(chunks),
+            'chunks': len(child_chunks),
+            'parents': len(parent_chunks) if parent_chunks else 0,
+            'chunking_mode': st.session_state.chunking_mode,
             'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
         
         progress_bar.progress(100)
         status_text.text("✅ Processing complete!")
         
-        st.success(f"✅ Successfully processed {file_ext}: {uploaded_file.name}")
+        st.success(f"✅ {file_ext}: {uploaded_file.name} | Mode: {st.session_state.chunking_mode.upper()}")
         st.balloons()
         
         st.session_state.processing = False
         
-        # Auto-rerun
         import time
         time.sleep(2)
         try:
@@ -314,6 +434,8 @@ def process_uploaded_file(uploaded_file):
         
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         st.session_state.processing = False
 
 
@@ -389,30 +511,57 @@ def display_chat_interface():
 
 
 def process_user_query(query: str):
-    """Process user query and generate response."""
+    """Process user query with hierarchical support."""
     
-    # Add user message
-    st.session_state.messages.append({
-        "role": "user",
-        "content": query
-    })
-    
-    # Display user message immediately
-    with st.chat_message("user"):
-        st.markdown(query)
-    
-    # Generate response
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
+    try:
+        # Add user message
+        st.session_state.messages.append({
+            "role": "user",
+            "content": query
+        })
+        
+        with st.chat_message("user"):
+            st.markdown(query)
+        
+        with st.chat_message("assistant"):
+            with st.spinner("🤔 Thinking..."):
+                
+                # Check documents
+                if not st.session_state.documents:
+                    error_msg = "❌ No documents uploaded."
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    return
+                
+                if not st.session_state.rag_initialized:
+                    error_msg = "❌ System not initialized."
+                    st.error(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    return
+                
                 # Embed query
                 query_embedding = st.session_state.embedder.embed_query(query)
                 
-                # Search for relevant chunks
-                relevant_chunks = st.session_state.vector_store.search(
-                    query_embedding, 
-                    top_k=5
-                )
+                # Search - HIERARCHICAL OR FLAT ← NEW LOGIC
+                if st.session_state.chunking_mode == 'hierarchical':
+                    # Use hierarchical search
+                    relevant_chunks = st.session_state.vector_store.search(
+                        query_embedding, 
+                        top_k=5,
+                        return_parent=True
+                    )
+                else:
+                    # Use flat search (old way)
+                    relevant_chunks = st.session_state.vector_store.search(
+                        query_embedding, 
+                        top_k=5
+                    )
+                
+                if not relevant_chunks:
+                    warning_msg = "⚠️ No relevant information found."
+                    st.warning(warning_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": warning_msg})
+                    return
                 
                 # Generate answer
                 result = st.session_state.generator.generate(
@@ -426,25 +575,22 @@ def process_user_query(query: str):
                 
                 # Display citations
                 if result['citations']:
-                    with st.expander("📚 View Sources"):
+                    with st.expander("📚 View Sources", expanded=False):
                         for citation in result['citations']:
-                            st.caption(f"**Source {citation['source_number']}** (Score: {citation['score']:.4f})")
+                            st.caption(f"**Source {citation['source_number']}** (Relevance: {citation['score']:.2%})")
                             st.text(citation['text_preview'])
                 
-                # Add assistant message to history
+                # Save to history
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": result['answer'],
                     "citations": result['citations']
                 })
                 
-            except Exception as e:
-                error_msg = f"❌ Error generating response: {str(e)}"
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg
-                })
+    except Exception as e:
+        error_msg = f"❌ Error: {str(e)}"
+        st.error(error_msg)
+        st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 
 def display_footer():
@@ -464,27 +610,38 @@ def display_footer():
         st.caption("📊 Traditional RAG Baseline")
 
 def display_statistics():
-    """Display system statistics."""
+    """Display system statistics with hierarchical info."""
     
     if st.session_state.documents and st.session_state.rag_initialized:
         st.subheader("📊 System Statistics")
         
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             total_chunks = sum(doc['chunks'] for doc in st.session_state.documents)
             st.metric("Total Chunks", total_chunks)
         
         with col2:
-            total_pages = sum(doc['pages'] for doc in st.session_state.documents)
-            st.metric("Total Pages", total_pages)
+            total_parents = sum(doc.get('parents', 0) for doc in st.session_state.documents)
+            st.metric("Parent Chunks", total_parents)
         
         with col3:
-            st.metric("Queries Asked", len([m for m in st.session_state.messages if m['role'] == 'user']))
+            queries_count = len([m for m in st.session_state.messages if m['role'] == 'user'])
+            st.metric("Queries", queries_count)
         
         with col4:
-            if st.session_state.vector_store:
-                st.metric("Vectors Stored", len(st.session_state.vector_store.chunks))
+            # Show mode
+            mode = st.session_state.chunking_mode
+            mode_icon = "🔺" if mode == 'hierarchical' else "📊"
+            st.metric("Mode", f"{mode_icon} {mode.title()}")
+        
+        with col5:
+            # Context size
+            if st.session_state.chunking_mode == 'hierarchical':
+                context = "2000 tok"
+            else:
+                context = "500 tok"
+            st.metric("Context", context)
         
         st.divider()
 
