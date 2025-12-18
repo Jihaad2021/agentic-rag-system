@@ -71,3 +71,15 @@ logs/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+
+# Data files (DO NOT COMMIT)
+data/
+!data/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/chroma_db/*
+!data/chroma_db/.gitkeep
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/test_*
