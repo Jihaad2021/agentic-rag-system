@@ -1,6 +1,6 @@
 """
 Streamlit Web Interface for Agentic RAG System
-Phase 1 Day 8 - Hierarchical Chunking Integration
+Phase 1 Day 10 - ChromaDB Persistent Storage
 """
 
 import streamlit as st
@@ -17,7 +17,7 @@ from rag_poc import (
 
 # Import hierarchical components ← NEW
 from src.ingestion.hierarchical_chunker import HierarchicalChunker
-from src.storage.hierarchical_store import HierarchicalVectorStore
+from src.storage.chroma_store import ChromaVectorStore 
 
 # Keep old components for comparison
 from rag_poc import TextChunker, SimpleVectorStore
@@ -257,6 +257,13 @@ def sidebar():
         
         if st.session_state.rag_initialized:
             st.success("✅ RAG System Ready")
+            
+            # Show ChromaDB stats ← NEW
+            try:
+                stats = st.session_state.vector_store.get_stats()
+                st.caption(f"💾 Vectors in DB: {stats['total_vectors']:,}")
+            except:
+                pass
         else:
             st.warning("⏳ Upload a document to start")
         
@@ -267,6 +274,28 @@ def sidebar():
                 st.rerun()
             except AttributeError:
                 st.experimental_rerun()
+        
+        # Clear database button (NEW - CAREFUL!)
+        if st.session_state.rag_initialized:
+            st.divider()
+            
+            with st.expander("⚠️ Advanced Options"):
+                st.warning("**Danger Zone**")
+                
+                if st.button("🗑️ Clear Vector Database", type="secondary"):
+                    if st.button("⚠️ Confirm Clear All Vectors?"):
+                        try:
+                            st.session_state.vector_store.clear_all()
+                            st.session_state.documents = []
+                            st.session_state.parent_chunks = []
+                            st.session_state.child_chunks = []
+                            st.success("✅ Database cleared")
+                            try:
+                                st.rerun()
+                            except AttributeError:
+                                st.experimental_rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
 def export_chat_history():
     """Export chat history as text file."""
@@ -296,7 +325,7 @@ def export_chat_history():
     )
 
 def process_uploaded_file(uploaded_file):
-    """Process uploaded document with hierarchical chunking."""
+    """Process uploaded document with ChromaDB persistent storage."""
     
     try:
         st.session_state.processing = True
@@ -316,18 +345,18 @@ def process_uploaded_file(uploaded_file):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Step 1: Initialize
+        # Step 1: Initialize - USE CHROMADB ← UPDATED
         status_text.text("🔧 Initializing RAG components...")
         progress_bar.progress(10)
         
         if not st.session_state.rag_initialized:
             st.session_state.embedder = Embedder()
             
-            # Initialize appropriate vector store
-            if st.session_state.chunking_mode == 'hierarchical':
-                st.session_state.vector_store = HierarchicalVectorStore()
-            else:
-                st.session_state.vector_store = SimpleVectorStore()
+            # Use ChromaDB instead of in-memory ← CHANGED
+            from src.storage.chroma_store import ChromaVectorStore
+            st.session_state.vector_store = ChromaVectorStore(
+                persist_directory="data/chroma_db"
+            )
             
             st.session_state.generator = AnswerGenerator()
             st.session_state.rag_initialized = True

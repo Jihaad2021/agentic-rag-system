@@ -5,6 +5,7 @@ langchain-voyageai==0.2.0
 
 # Document Processing
 pypdf==3.17.0
+python-docx>=1.0.0
 tiktoken==0.7.0
 
 # Math & Vectors
@@ -12,18 +13,23 @@ numpy>=1.24.0
 
 # Configuration
 python-dotenv==1.0.0
-pydantic>=2.7.4
-pydantic-settings>=2.1.0
-
-# Development
-pytest>=7.4.0
-black>=23.10.0
 
 # Web UI
-streamlit==1.25.0
-pyarrow==14.0.1python-docx>=1.0.0
+streamlit>=1.28.0
+pyarrow==14.0.1
 
 # Database
 psycopg2-binary>=2.9.9
 sqlalchemy>=2.0.23
 alembic>=1.13.0
+
+# Vector Database
+chromadb>=0.4.22
+protobuf>=4.21.0,<5.0.0
+
+# Sentence Transformers (for local embeddings if needed)
+sentence-transformers>=2.2.0
+
+# Development
+pytest
+black
