@@ -1,6 +1,8 @@
 """
 Test hierarchical chunking integrated with embeddings and search.
 """
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # ← ADD THIS
 
 import sys
 from pathlib import Path
