@@ -3,76 +3,35 @@ Simple evaluation metrics without RAGAS.
 Manual implementation of basic quality metrics.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import numpy as np
 from difflib import SequenceMatcher
 
 
 class SimpleEvaluator:
-    """
-    Simple evaluation metrics for RAG system.
-    
-    Metrics:
-    - Answer Relevancy: Keyword overlap with question
-    - Answer Quality: Length and completeness
-    - Context Relevance: Keyword overlap with contexts
-    - Similarity: String similarity with ground truth
-    """
+    """Simple evaluation metrics for RAG system."""
     
     def __init__(self):
-        """Initialize simple evaluator."""
         print("📊 Simple Evaluator initialized")
     
-    def evaluate_answer_relevancy(
-        self,
-        question: str,
-        answer: str
-    ) -> float:
-        """
-        Measure answer relevancy to question.
-        Based on keyword overlap.
-        
-        Args:
-            question: User query
-            answer: Generated answer
-            
-        Returns:
-            Score 0.0-1.0
-        """
-        # Extract keywords (simple: just words)
+    def evaluate_answer_relevancy(self, question: str, answer: str) -> float:
+        """Measure answer relevancy to question."""
         q_words = set(question.lower().split())
         a_words = set(answer.lower().split())
         
-        # Remove common words
-        stop_words = {'is', 'the', 'a', 'an', 'what', 'how', 'why', 'when', 'where'}
+        stop_words = {'is', 'the', 'a', 'an', 'what', 'how', 'why', 'when', 'where', 'who'}
         q_words = q_words - stop_words
         a_words = a_words - stop_words
         
         if not q_words:
             return 0.5
         
-        # Calculate overlap
         overlap = len(q_words & a_words)
         score = overlap / len(q_words)
-        
         return min(score, 1.0)
     
-    def evaluate_faithfulness(
-        self,
-        answer: str,
-        contexts: List[str]
-    ) -> float:
-        """
-        Measure if answer is grounded in contexts.
-        Based on word overlap with contexts.
-        
-        Args:
-            answer: Generated answer
-            contexts: Retrieved contexts
-            
-        Returns:
-            Score 0.0-1.0
-        """
+    def evaluate_faithfulness(self, answer: str, contexts: List[str]) -> float:
+        """Measure if answer is grounded in contexts."""
         if not contexts:
             return 0.0
         
@@ -85,75 +44,94 @@ class SimpleEvaluator:
         if not answer_words:
             return 0.0
         
-        # Calculate how many answer words appear in contexts
         overlap = len(answer_words & context_words)
         score = overlap / len(answer_words)
-        
         return min(score, 1.0)
     
-    def evaluate_similarity(
+    def evaluate_similarity(self, answer: str, ground_truth: str) -> float:
+        """Measure similarity with ground truth."""
+        return SequenceMatcher(None, answer.lower(), ground_truth.lower()).ratio()
+    
+    def evaluate_completeness(self, answer: str) -> float:
+        """Measure answer completeness based on length."""
+        words = len(answer.split())
+        # Ideal answer: 20-100 words
+        if words < 20:
+            return words / 20
+        elif words > 100:
+            return max(0.5, 1.0 - (words - 100) / 200)
+        else:
+            return 1.0
+    
+    def evaluate_single(
         self,
+        question: str,
         answer: str,
-        ground_truth: str
-    ) -> float:
+        contexts: List[str],
+        ground_truth: Optional[str] = None
+    ) -> Dict[str, float]:
         """
-        Measure similarity with ground truth.
-        Using sequence matcher.
+        Evaluate single Q&A.
         
         Args:
+            question: User query
             answer: Generated answer
-            ground_truth: Expected answer
+            contexts: Retrieved contexts
+            ground_truth: Expected answer (optional)
             
         Returns:
-            Score 0.0-1.0
+            Dictionary of scores
         """
-        return SequenceMatcher(None, answer.lower(), ground_truth.lower()).ratio()
+        
+        scores = {
+            'relevancy': self.evaluate_answer_relevancy(question, answer),
+            'faithfulness': self.evaluate_faithfulness(answer, contexts),
+            'completeness': self.evaluate_completeness(answer)
+        }
+        
+        # Only add similarity if ground_truth provided
+        if ground_truth:
+            scores['similarity'] = self.evaluate_similarity(answer, ground_truth)
+        
+        scores['overall'] = np.mean(list(scores.values()))
+        
+        return scores
     
     def evaluate_rag_system(
         self,
         questions: List[str],
         answers: List[str],
         contexts: List[List[str]],
-        ground_truths: List[str]
+        ground_truths: Optional[List[str]] = None
     ) -> Dict[str, float]:
         """
-        Evaluate RAG system performance.
+        Evaluate multiple Q&A cases.
         
         Args:
             questions: List of queries
             answers: List of generated answers
-            contexts: List of retrieved contexts
-            ground_truths: List of expected answers
+            contexts: List of retrieved contexts (list of lists)
+            ground_truths: List of expected answers (optional)
             
         Returns:
-            Dictionary of metric scores
+            Dictionary of average scores
         """
+        
         print(f"\n📊 Evaluating {len(questions)} test cases...")
         
-        relevancy_scores = []
-        faithfulness_scores = []
-        similarity_scores = []
+        all_scores = []
+        for i, (q, a, c) in enumerate(zip(questions, answers, contexts)):
+            gt = ground_truths[i] if ground_truths and i < len(ground_truths) else None
+            scores = self.evaluate_single(q, a, c, gt)
+            all_scores.append(scores)
         
-        for q, a, c, gt in zip(questions, answers, contexts, ground_truths):
-            relevancy_scores.append(self.evaluate_answer_relevancy(q, a))
-            faithfulness_scores.append(self.evaluate_faithfulness(a, c))
-            similarity_scores.append(self.evaluate_similarity(a, gt))
-        
-        scores = {
-            'answer_relevancy': np.mean(relevancy_scores),
-            'faithfulness': np.mean(faithfulness_scores),
-            'similarity': np.mean(similarity_scores),
-            'overall': np.mean([
-                np.mean(relevancy_scores),
-                np.mean(faithfulness_scores),
-                np.mean(similarity_scores)
-            ])
-        }
+        # Average scores across all test cases
+        result = {}
+        for key in all_scores[0].keys():
+            result[key] = np.mean([s[key] for s in all_scores])
         
         print(f"\n   ✅ Evaluation complete!")
-        print(f"      Answer Relevancy: {scores['answer_relevancy']:.3f}")
-        print(f"      Faithfulness: {scores['faithfulness']:.3f}")
-        print(f"      Similarity: {scores['similarity']:.3f}")
-        print(f"      Overall Score: {scores['overall']:.3f}")
+        for metric, score in result.items():
+            print(f"      {metric.title()}: {score:.3f}")
         
-        return scores
+        return result
