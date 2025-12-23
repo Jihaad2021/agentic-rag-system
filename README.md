@@ -173,4 +173,48 @@ This is a personal learning project. Feedback welcome!
 
 ---
 
+## 🤖 Agent System
+
+### Architecture
+
+The system uses **11 specialized agents** organized in 3 levels:
+
+**Level 1 (Strategic):**
+- Planner Agent - Analyzes query complexity and selects strategy
+
+**Level 2 (Tactical):**
+- Query Decomposer - Breaks complex queries into sub-questions
+- Retrieval Coordinator - Manages parallel retrieval swarm
+- Validator - Quality control for retrieved content
+- Synthesis - Deduplicates and ranks results
+- Writer - Generates final answer
+- Critic - Reviews and approves/regenerates
+
+**Level 3 (Operational):**
+- Vector Search Agent - Semantic search
+- Keyword Search Agent - BM25 exact matching
+- Graph Search Agent - Relationship-based retrieval
+
+### Creating Custom Agents
+```python
+from src.agents.base_agent import BaseAgent
+from src.models.agent_state import AgentState
+
+class MyAgent(BaseAgent):
+    def __init__(self):
+        super().__init__(name="my_agent", version="1.0.0")
+    
+    def execute(self, state: AgentState) -> AgentState:
+        # Your logic here
+        state.my_field = "processed"
+        return state
+
+# Usage
+agent = MyAgent()
+result = agent.run(state)
+metrics = agent.get_metrics()
+```
+
+See `docs/AGENT_ARCHITECTURE.md` for detailed patterns and best practices.
+
 _Building intelligent document Q&A, one week at a time._ 🚀
