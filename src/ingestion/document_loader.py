@@ -152,23 +152,24 @@ class DocumentLoader:
         """
         Load text from PDF file.
         
-        Uses PyMuPDF (fitz) for text extraction.
+        Uses pypdf for text extraction.
         """
         try:
-            import fitz  # PyMuPDF
+            from pypdf import PdfReader
         except ImportError:
             raise DocumentLoadError(
-                message="PyMuPDF not installed. Run: pip install pymupdf",
-                details={"required_package": "pymupdf"}
+                message="pypdf not installed. Run: pip install pypdf",
+                details={"required_package": "pypdf"}
             )
         
         text_parts = []
         
-        with fitz.open(path) as doc:
-            for page_num, page in enumerate(doc, 1):
-                text = page.get_text()
-                if text.strip():
-                    text_parts.append(text)
+        reader = PdfReader(path)
+        
+        for page_num, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            if text.strip():
+                text_parts.append(text)
         
         if not text_parts:
             raise DocumentLoadError(
