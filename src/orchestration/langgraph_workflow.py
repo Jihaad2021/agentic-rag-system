@@ -10,7 +10,7 @@ Workflow:
                           └─ (retry) ─┘
 """
 
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, TypedDict
 from langgraph.graph import StateGraph, END
 
 from src.models.agent_state import AgentState
@@ -96,13 +96,18 @@ class AgenticRAGWorkflow:
         """
         self.logger.info("Building LangGraph workflow...")
         
-        # Create state graph
-        graph = StateGraph(AgentState)
+        # Define state schema for LangGraph
+        class WorkflowState(TypedDict):
+            """State schema for LangGraph."""
+            agent_state: AgentState
         
-        # Add nodes (agents)
-        graph.add_node("planner", self._planner_node)
-        graph.add_node("retrieval", self._retrieval_node)
-        graph.add_node("validator", self._validator_node)
+        # Create state graph
+        graph = StateGraph(WorkflowState)
+        
+        # Add nodes (with wrappers for LangGraph compatibility)
+        graph.add_node("planner", self._planner_node_wrapper)
+        graph.add_node("retrieval", self._retrieval_node_wrapper)
+        graph.add_node("validator", self._validator_node_wrapper)
         
         # Define edges
         # START → planner
@@ -117,7 +122,7 @@ class AgenticRAGWorkflow:
         # validator → END or retrieval (conditional)
         graph.add_conditional_edges(
             "validator",
-            self._should_continue,
+            self._should_continue_wrapper,
             {
                 "continue": "retrieval",  # Retry retrieval
                 "end": END               # Finish workflow
@@ -270,6 +275,45 @@ class AgenticRAGWorkflow:
             )
             return "end"
     
+    def _planner_node_wrapper(self, state: dict) -> dict:
+        """
+        LangGraph wrapper for planner node.
+        
+        Converts between LangGraph state format and AgentState.
+        """
+        agent_state = state["agent_state"]
+        updated_state = self._planner_node(agent_state)
+        return {"agent_state": updated_state}
+    
+    def _retrieval_node_wrapper(self, state: dict) -> dict:
+        """
+        LangGraph wrapper for retrieval node.
+        
+        Converts between LangGraph state format and AgentState.
+        """
+        agent_state = state["agent_state"]
+        updated_state = self._retrieval_node(agent_state)
+        return {"agent_state": updated_state}
+    
+    def _validator_node_wrapper(self, state: dict) -> dict:
+        """
+        LangGraph wrapper for validator node.
+        
+        Converts between LangGraph state format and AgentState.
+        """
+        agent_state = state["agent_state"]
+        updated_state = self._validator_node(agent_state)
+        return {"agent_state": updated_state}
+    
+    def _should_continue_wrapper(self, state: dict) -> Literal["continue", "end"]:
+        """
+        LangGraph wrapper for conditional routing.
+        
+        Converts between LangGraph state format and AgentState.
+        """
+        agent_state = state["agent_state"]
+        return self._should_continue(agent_state)
+    
     def run(self, query: str) -> AgentState:
         """
         Run complete workflow for a query.
@@ -297,20 +341,24 @@ class AgenticRAGWorkflow:
         
         try:
             # Create initial state
-            initial_state = AgentState(query=query)
+            initial_agent_state = AgentState(query=query)
+            initial_state = {"agent_state": initial_agent_state}
             
             # Run workflow
             final_state = self.workflow.invoke(initial_state)
             
+            # Extract agent state from wrapper
+            final_agent_state = final_state["agent_state"]
+            
             self.logger.info(
                 f"Workflow completed: "
-                f"strategy={final_state.strategy.value}, "
-                f"chunks={len(final_state.chunks)}, "
-                f"rounds={final_state.retrieval_round}, "
-                f"validation={final_state.validation_status}"
+                f"strategy={final_agent_state.strategy.value}, "
+                f"chunks={len(final_agent_state.chunks)}, "
+                f"rounds={final_agent_state.retrieval_round}, "
+                f"validation={final_agent_state.validation_status}"
             )
             
-            return final_state
+            return final_agent_state
             
         except OrchestrationError:
             # Re-raise orchestration errors
@@ -363,7 +411,10 @@ class AgenticRAGWorkflow:
             
             # Node 2: Retrieval (with potential retries)
             retrieval_attempts = []
-            while True:
+            max_iterations = 5  # Prevent infinite loop
+            iteration = 0
+            
+            while iteration < max_iterations:
                 execution_path.append("retrieval")
                 state = self._retrieval_node(state)
                 
@@ -379,6 +430,8 @@ class AgenticRAGWorkflow:
                 # Check if should continue
                 if self._should_continue(state) == "end":
                     break
+                
+                iteration += 1
             
             node_outputs["retrieval"] = retrieval_attempts
             node_outputs["validator"] = {
