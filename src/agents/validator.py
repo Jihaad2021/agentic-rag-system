@@ -182,29 +182,35 @@ class ValidatorAgent(BaseAgent):
             self.log("No chunks to validate", level="warning")
             return 0.0
         
-        # Factor 1: Relevance (50%)
-        relevance_score = self._check_relevance(query, chunks)
-        
-        # Factor 2: Coverage (30%)
-        coverage_score = self._check_coverage(query, chunks)
-        
-        # Factor 3: Confidence (20%)
-        confidence_score = self._check_confidence(chunks)
-        
-        self.log(
-            f"Validation factors: relevance={relevance_score:.2f}, "
-            f"coverage={coverage_score:.2f}, confidence={confidence_score:.2f}",
-            level="debug"
-        )
-        
-        # Weighted combination
-        final_score = (
-            relevance_score * 0.5 +
-            coverage_score * 0.3 +
-            confidence_score * 0.2
-        )
-        
-        return max(0.0, min(final_score, 1.0))
+        try:
+            # Factor 1: Relevance (50%)
+            relevance_score = self._check_relevance(query, chunks)
+            
+            # Factor 2: Coverage (30%)
+            coverage_score = self._check_coverage(query, chunks)
+            
+            # Factor 3: Confidence (20%)
+            confidence_score = self._check_confidence(chunks)
+            
+            self.log(
+                f"Validation factors: relevance={relevance_score:.2f}, "
+                f"coverage={coverage_score:.2f}, confidence={confidence_score:.2f}",
+                level="debug"
+            )
+            
+            # Weighted combination
+            final_score = (
+                relevance_score * 0.5 +
+                coverage_score * 0.3 +
+                confidence_score * 0.2
+            )
+            
+            return max(0.0, min(final_score, 1.0))
+            
+        except Exception as e:
+            self.log(f"Error calculating sufficiency: {str(e)}", level="warning")
+            # Return conservative score on error
+            return 0.5
     
     def _check_relevance(self, query: str, chunks: List[Chunk]) -> float:
         """
@@ -326,8 +332,8 @@ Respond with ONLY a number between 0.0 and 1.0."""
         coverage_ratio = min(chunk_count / ideal_chunks, 1.0)
         
         # Also consider chunk diversity (different sources)
-        unique_docs = len(set(c.doc_id for c in chunks))
-        diversity_score = min(unique_docs / 3, 1.0)  # Ideal: 3+ different docs
+        unique_docs = len(set(c.doc_id for c in chunks if c.doc_id))
+        diversity_score = min(unique_docs / 3, 1.0) if unique_docs > 0 else 0.3
         
         # Combine ratio and diversity
         coverage_score = (coverage_ratio * 0.7) + (diversity_score * 0.3)
