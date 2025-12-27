@@ -1,14 +1,15 @@
 """
-Document Chunker - Split documents into chunks with hierarchy.
+Document Chunker - Fast hierarchical chunking with LangChain.
 
-Implements hierarchical chunking:
-- Parent chunks: Large context (2000 tokens)
-- Child chunks: Retrieval units (500 tokens)
+Uses LangChain's RecursiveCharacterTextSplitter for efficient splitting.
+Much faster than manual character-by-character scanning.
 """
 
 from typing import List, Dict, Any, Optional
 import hashlib
 from dataclasses import dataclass
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.config import get_settings
 from src.utils.logger import setup_logger
@@ -60,14 +61,15 @@ class Chunk:
 
 class DocumentChunker:
     """
-    Hierarchical document chunker.
+    Fast hierarchical document chunker using LangChain.
     
     Creates parent chunks (large context) and child chunks (retrieval units).
+    Uses RecursiveCharacterTextSplitter for efficient, smart splitting.
     
     Strategy:
-    - Parent chunks: 2000 tokens with 200 overlap
-    - Child chunks: 500 tokens with 50 overlap
-    - Each child knows its parent for context retrieval
+    - Parent chunks: 2000 chars with 200 overlap
+    - Child chunks: 500 chars with 50 overlap
+    - Smart splitting at sentence/paragraph boundaries
     
     Example:
         >>> from src.ingestion.document_loader import Document
@@ -84,32 +86,46 @@ class DocumentChunker:
         parent_chunk_size: Optional[int] = None
     ):
         """
-        Initialize chunker with configuration.
+        Initialize chunker with LangChain splitters.
         
         Args:
-            chunk_size: Child chunk size in tokens (default from config)
+            chunk_size: Child chunk size in characters (default from config)
             chunk_overlap: Overlap between child chunks (default from config)
-            parent_chunk_size: Parent chunk size in tokens (default from config)
+            parent_chunk_size: Parent chunk size in characters (default from config)
         """
         self.logger = setup_logger("chunker")
         settings = get_settings()
         
-        self.chunk_size = chunk_size or settings.chunk_size
-        self.chunk_overlap = chunk_overlap or settings.chunk_overlap
-        self.parent_chunk_size = parent_chunk_size or settings.parent_chunk_size
-        
-        # Calculate parent overlap (10% of parent size)
+        # Convert token sizes to character approximation (4 chars ≈ 1 token)
+        self.chunk_size = (chunk_size or settings.chunk_size) * 4
+        self.chunk_overlap = (chunk_overlap or settings.chunk_overlap) * 4
+        self.parent_chunk_size = (parent_chunk_size or settings.parent_chunk_size) * 4
         self.parent_overlap = int(self.parent_chunk_size * 0.1)
         
+        # Initialize LangChain splitters
+        self.parent_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.parent_chunk_size,
+            chunk_overlap=self.parent_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""]  # Try paragraphs, sentences, words
+        )
+        
+        self.child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
+        
         self.logger.info(
-            f"Initialized chunker: "
+            f"Initialized LangChain chunker: "
             f"child={self.chunk_size}±{self.chunk_overlap}, "
             f"parent={self.parent_chunk_size}±{self.parent_overlap}"
         )
     
     def chunk(self, document) -> List[Chunk]:
         """
-        Chunk document hierarchically.
+        Chunk document hierarchically using LangChain.
         
         Creates parent chunks first, then child chunks within each parent.
         
@@ -131,164 +147,85 @@ class DocumentChunker:
         
         all_chunks = []
         
-        # Step 1: Create parent chunks
-        parent_chunks = self._create_parent_chunks(document)
-        all_chunks.extend(parent_chunks)
+        # Step 1: Create parent chunks (fast with LangChain)
+        parent_texts = self.parent_splitter.split_text(document.text)
         
-        # Step 2: Create child chunks within each parent
-        for parent in parent_chunks:
-            child_chunks = self._create_child_chunks(parent, document)
-            all_chunks.extend(child_chunks)
+        self.logger.debug(f"Created {len(parent_texts)} parent text chunks")
         
-        self.logger.info(
-            f"Created {len(parent_chunks)} parent chunks, "
-            f"{len(all_chunks) - len(parent_chunks)} child chunks"
-        )
+        # Create parent chunk objects
+        current_pos = 0
+        parent_chunks = []
         
-        return all_chunks
-    
-    def _create_parent_chunks(self, document) -> List[Chunk]:
-        """
-        Create parent chunks from document.
-        
-        Args:
-            document: Document object
-        
-        Returns:
-            List of parent Chunk objects
-        """
-        text = document.text
-        
-        # Simple character-based chunking (approximation for tokens)
-        # In production, use tiktoken for accurate token counting
-        char_per_token = 4  # Rough approximation
-        parent_chunk_chars = self.parent_chunk_size * char_per_token
-        parent_overlap_chars = self.parent_overlap * char_per_token
-        
-        chunks = []
-        start = 0
-        chunk_num = 0
-        
-        while start < len(text):
-            end = min(start + parent_chunk_chars, len(text))
+        for i, parent_text in enumerate(parent_texts):
+            # Find position in original text
+            start_pos = document.text.find(parent_text, current_pos)
+            if start_pos == -1:
+                start_pos = current_pos
+            end_pos = start_pos + len(parent_text)
             
-            # Find sentence boundary for natural split
-            if end < len(text):
-                # Look for sentence ending near the boundary
-                sentence_ends = [". ", ".\n", "! ", "?\n", "? "]
-                best_end = end
+            chunk_id = self._generate_chunk_id(document.doc_id, f"parent_{i}")
+            
+            chunk = Chunk(
+                text=parent_text,
+                doc_id=document.doc_id,
+                chunk_id=chunk_id,
+                parent_id=None,
+                metadata={
+                    **document.metadata,
+                    "chunk_type": "parent",
+                    "chunk_index": i
+                },
+                start_char=start_pos,
+                end_char=end_pos
+            )
+            
+            parent_chunks.append(chunk)
+            all_chunks.append(chunk)
+            current_pos = end_pos
+        
+        # Step 2: Create child chunks within each parent (fast with LangChain)
+        for parent_idx, parent in enumerate(parent_chunks):
+            child_texts = self.child_splitter.split_text(parent.text)
+            
+            current_pos = 0
+            for child_idx, child_text in enumerate(child_texts):
+                # Find position in parent text
+                start_pos = parent.text.find(child_text, current_pos)
+                if start_pos == -1:
+                    start_pos = current_pos
+                end_pos = start_pos + len(child_text)
                 
-                # Search backwards for sentence boundary (up to 100 chars)
-                for i in range(end, max(end - 100, start), -1):
-                    for sent_end in sentence_ends:
-                        if text[i:i+len(sent_end)] == sent_end:
-                            best_end = i + len(sent_end)
-                            break
-                    if best_end != end:
-                        break
-                
-                end = best_end
-            
-            chunk_text = text[start:end].strip()
-            
-            if chunk_text:
                 chunk_id = self._generate_chunk_id(
                     document.doc_id,
-                    f"parent_{chunk_num}"
+                    f"{parent.chunk_id}_child_{child_idx}"
                 )
                 
                 chunk = Chunk(
-                    text=chunk_text,
+                    text=child_text,
                     doc_id=document.doc_id,
                     chunk_id=chunk_id,
-                    parent_id=None,  # This is a parent chunk
-                    metadata={
-                        **document.metadata,
-                        "chunk_type": "parent",
-                        "chunk_index": chunk_num
-                    },
-                    start_char=start,
-                    end_char=end
-                )
-                
-                chunks.append(chunk)
-                chunk_num += 1
-            
-            # Move to next chunk with overlap
-            start = end - parent_overlap_chars
-        
-        return chunks
-    
-    def _create_child_chunks(self, parent: Chunk, document) -> List[Chunk]:
-        """
-        Create child chunks within a parent chunk.
-        
-        Args:
-            parent: Parent Chunk object
-            document: Original document
-        
-        Returns:
-            List of child Chunk objects
-        """
-        text = parent.text
-        
-        # Character-based chunking for child chunks
-        char_per_token = 4
-        chunk_chars = self.chunk_size * char_per_token
-        overlap_chars = self.chunk_overlap * char_per_token
-        
-        chunks = []
-        start = 0
-        child_num = 0
-        
-        while start < len(text):
-            end = min(start + chunk_chars, len(text))
-            
-            # Find sentence boundary
-            if end < len(text):
-                sentence_ends = [". ", ".\n", "! ", "?\n", "? "]
-                best_end = end
-                
-                for i in range(end, max(end - 50, start), -1):
-                    for sent_end in sentence_ends:
-                        if text[i:i+len(sent_end)] == sent_end:
-                            best_end = i + len(sent_end)
-                            break
-                    if best_end != end:
-                        break
-                
-                end = best_end
-            
-            chunk_text = text[start:end].strip()
-            
-            if chunk_text:
-                chunk_id = self._generate_chunk_id(
-                    document.doc_id,
-                    f"{parent.chunk_id}_child_{child_num}"
-                )
-                
-                chunk = Chunk(
-                    text=chunk_text,
-                    doc_id=document.doc_id,
-                    chunk_id=chunk_id,
-                    parent_id=parent.chunk_id,  # Link to parent
+                    parent_id=parent.chunk_id,
                     metadata={
                         **document.metadata,
                         "chunk_type": "child",
-                        "chunk_index": child_num,
-                        "parent_index": parent.metadata.get("chunk_index")
+                        "chunk_index": child_idx,
+                        "parent_index": parent_idx
                     },
-                    start_char=parent.start_char + start,
-                    end_char=parent.start_char + end
+                    start_char=parent.start_char + start_pos,
+                    end_char=parent.start_char + end_pos
                 )
                 
-                chunks.append(chunk)
-                child_num += 1
-            
-            # Move to next chunk with overlap
-            start = end - overlap_chars
+                all_chunks.append(chunk)
+                current_pos = end_pos
         
-        return chunks
+        child_count = len([c for c in all_chunks if c.parent_id is not None])
+        
+        self.logger.info(
+            f"Created {len(parent_chunks)} parent chunks, "
+            f"{child_count} child chunks (total: {len(all_chunks)})"
+        )
+        
+        return all_chunks
     
     def _generate_chunk_id(self, doc_id: str, chunk_key: str) -> str:
         """

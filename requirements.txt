@@ -34,3 +34,4 @@ sentence-transformers>=2.2.0
 # Development
 pytest
 black
+langchain-text-splitters>=0.3.0
