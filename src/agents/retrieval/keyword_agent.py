@@ -2,62 +2,94 @@
 Keyword Search Agent - Operational Level 3 Agent.
 
 Performs keyword-based search using BM25 algorithm.
-This is a MOCK implementation for testing the coordinator.
-
-Real implementation will use:
-- BM25 algorithm for ranking
-- Inverted index for fast lookup
-- Elasticsearch or custom implementation
+Uses BM25Index for fast inverted index search.
 """
 
-from typing import List
+from typing import List, Optional
 
 from src.agents.base_agent import BaseAgent
 from src.models.agent_state import AgentState, Chunk
+from src.retrieval.bm25_index import BM25Index, BM25IndexError
 from src.utils.exceptions import RetrievalError
+from src.config import get_settings
 
 
 class KeywordSearchAgent(BaseAgent):
     """
-    Keyword Search Agent - BM25 retrieval (MOCK).
+    Keyword Search Agent - BM25 retrieval.
     
-    Performs keyword-based search using exact term matching
-    and BM25 ranking algorithm.
-    
-    NOTE: This is a mock implementation that returns dummy chunks.
-    Real implementation will use BM25 with inverted index.
+    Performs keyword-based search using BM25 algorithm for
+    exact term matching and relevance scoring.
     
     Attributes:
         top_k: Number of chunks to retrieve
-        mock_mode: If True, returns dummy chunks (default: True)
+        bm25_index: BM25 index instance
+        mock_mode: If True, returns dummy chunks (for testing)
         
     Example:
-        >>> agent = KeywordSearchAgent(top_k=10)
+        >>> # Real mode
+        >>> agent = KeywordSearchAgent(top_k=10, mock_mode=False)
         >>> state = AgentState(query="Python programming")
         >>> result = agent.run(state)
         >>> print(len(result.chunks))  # 10
+        
+        >>> # Mock mode (for testing)
+        >>> agent = KeywordSearchAgent(top_k=5, mock_mode=True)
     """
     
-    def __init__(self, top_k: int = 10, mock_mode: bool = True):
+    def __init__(
+        self,
+        top_k: int = None,
+        mock_mode: bool = True,
+        bm25_index: BM25Index = None
+    ):
         """
         Initialize Keyword Search Agent.
         
         Args:
-            top_k: Number of chunks to retrieve
-            mock_mode: Use mock data (default: True)
+            top_k: Number of chunks to retrieve (default from config)
+            mock_mode: Use mock data (default: True for backward compatibility)
+            bm25_index: BM25Index instance (created if None)
         
         Example:
-            >>> agent = KeywordSearchAgent(top_k=5)
+            >>> # Real mode with auto-initialization
+            >>> agent = KeywordSearchAgent(top_k=10, mock_mode=False)
+            
+            >>> # Real mode with custom index
+            >>> index = BM25Index()
+            >>> agent = KeywordSearchAgent(bm25_index=index, mock_mode=False)
         """
-        super().__init__(name="keyword_search", version="1.0.0")
+        super().__init__(name="keyword_search", version="2.0.0")
         
-        self.top_k = top_k
+        settings = get_settings()
+        self.top_k = top_k or settings.retrieval_top_k
         self.mock_mode = mock_mode
         
-        self.log(
-            f"Initialized in {'MOCK' if mock_mode else 'REAL'} mode with top_k={top_k}",
-            level="debug"
-        )
+        # Initialize BM25 index (only if not mock mode)
+        if not mock_mode:
+            self.bm25_index = bm25_index or BM25Index()
+            
+            # Check if index is built
+            stats = self.bm25_index.get_stats()
+            if not stats['built']:
+                self.log(
+                    "BM25 index not built. Call build_index() or rebuild() first.",
+                    level="warning"
+                )
+            
+            self.log(
+                f"Initialized in REAL mode: "
+                f"top_k={self.top_k}, "
+                f"indexed_chunks={stats.get('total_chunks', 0)}",
+                level="info"
+            )
+        else:
+            self.bm25_index = None
+            
+            self.log(
+                f"Initialized in MOCK mode with top_k={self.top_k}",
+                level="debug"
+            )
     
     def execute(self, state: AgentState) -> AgentState:
         """
@@ -71,6 +103,11 @@ class KeywordSearchAgent(BaseAgent):
         
         Raises:
             RetrievalError: If search fails
+        
+        Example:
+            >>> state = AgentState(query="machine learning basics")
+            >>> result = agent.execute(state)
+            >>> print(result.chunks[0].text)
         """
         try:
             query = state.query
@@ -100,6 +137,64 @@ class KeywordSearchAgent(BaseAgent):
                 retrieval_type="keyword",
                 message=f"Keyword search failed: {str(e)}",
                 details={"query": state.query}
+            ) from e
+    
+    def _real_search(self, query: str) -> List[Chunk]:
+        """
+        Real keyword search using BM25 index.
+        
+        Args:
+            query: User query string
+        
+        Returns:
+            List of chunks from BM25 search
+        
+        Raises:
+            BM25IndexError: If search fails
+        """
+        try:
+            # Check if index is built
+            if self.bm25_index.bm25 is None:
+                raise RetrievalError(
+                    retrieval_type="keyword",
+                    message="BM25 index not built. Run build_index() first.",
+                    details={"query": query}
+                )
+            
+            # Search with BM25
+            self.log("Searching BM25 index...", level="debug")
+            search_results = self.bm25_index.search(
+                query=query,
+                top_k=self.top_k
+            )
+            
+            # Normalize scores to 0-1 range
+            if search_results:
+                max_score = max(r['score'] for r in search_results)
+                if max_score > 0:
+                    for result in search_results:
+                        result['score'] = result['score'] / max_score
+            
+            # Convert to Chunk objects
+            chunks = []
+            for result in search_results:
+                chunk = Chunk(
+                    text=result['text'],
+                    doc_id=result['metadata'].get('doc_id', 'unknown'),
+                    chunk_id=result['chunk_id'],
+                    score=result['score'],
+                    metadata=result['metadata']
+                )
+                chunks.append(chunk)
+            
+            return chunks
+            
+        except BM25IndexError as e:
+            self.log(f"BM25 index error: {str(e)}", level="error")
+            raise RetrievalError(
+                retrieval_type="keyword",
+                message=f"BM25 search failed: {str(e)}",
+                details={"query": query}
             ) from e
     
     def _mock_search(self, query: str) -> List[Chunk]:
@@ -178,22 +273,21 @@ class KeywordSearchAgent(BaseAgent):
         
         return chunks
     
-    def _real_search(self, query: str) -> List[Chunk]:
+    def build_index(self) -> None:
         """
-        Real keyword search implementation.
+        Build BM25 index from vector store.
         
-        TODO: Implement in Week 4
-        - Build inverted index
-        - Apply BM25 ranking
-        - Return top-k by BM25 score
+        Convenience method to build index.
         
-        Args:
-            query: User query string
-        
-        Returns:
-            List of chunks from BM25 search
+        Example:
+            >>> agent = KeywordSearchAgent(mock_mode=False)
+            >>> agent.build_index()  # Build index from ChromaDB
         """
-        raise NotImplementedError(
-            "Real keyword search not implemented yet. "
-            "Will be implemented in Week 4."
-        )
+        if self.mock_mode:
+            self.log("Cannot build index in mock mode", level="warning")
+            return
+        
+        self.log("Building BM25 index...", level="info")
+        self.bm25_index.build_from_vector_store()
+        self.bm25_index.save()
+        self.log("✅ BM25 index built and saved", level="info")
