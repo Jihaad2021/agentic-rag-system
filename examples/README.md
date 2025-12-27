@@ -1,70 +1,54 @@
 # Examples
 
-This directory contains example usage scripts for the Agentic RAG system.
-
 ## Available Examples
 
 ### `test_planner_usage.py`
-
-Demonstrates Planner Agent usage:
-- Query complexity analysis
-- Strategy selection
-- Feature extraction breakdown
-- Custom threshold configuration
-- Query comparison
+Demonstrates Planner Agent usage.
 
 **Run:**
 ```bash
 python examples/test_planner_usage.py
 ```
 
+### `test_workflow_usage.py`
+Demonstrates complete LangGraph workflow with all agents.
+
+**Features:**
+- Complete pipeline: Planner → Coordinator → Validator
+- Automatic retry logic
+- Execution tracing
+- Multiple query types
+
+**Run:**
+```bash
+python examples/test_workflow_usage.py
+```
+
 **Requirements:**
 - Valid `ANTHROPIC_API_KEY` in `.env`
-- Claude API access
+- All agents initialized
+- LangGraph installed
 
 **Output:**
 ```
-Planner Agent Demo
-==================================================
+Agentic RAG Workflow Demo
+======================================================================
 
-Query: What is Python?
-  Complexity: 0.245
-  Strategy: SIMPLE
-  Features:
-    - Length: 0.12
-    - Questions: 0.30
-    - Entities: 0.00
-    - Relationships: 0.00
+Step 1: Initializing components...
+✓ LLM: claude-3-5-sonnet-20241022
+✓ Planner Agent initialized
+✓ Validator Agent initialized
+✓ Retrieval Agents initialized (MOCK mode)
+
+Query 1: What is Python?
+Strategy: SIMPLE
+Complexity: 0.245
+Chunks Retrieved: 10
+Validation Status: PROCEED
 ```
 
-## Configuration
+## Demos Included
 
-Examples use settings from `src/config.py` and `.env` file.
-
-Key settings:
-- `ANTHROPIC_API_KEY` - Required for LLM calls
-- `PLANNER_COMPLEXITY_THRESHOLD_SIMPLE` - Default: 0.3
-- `PLANNER_COMPLEXITY_THRESHOLD_MULTIHOP` - Default: 0.7
-
-## Creating New Examples
-
-1. Import required components:
-```python
-from src.agents.planner import PlannerAgent
-from src.models.agent_state import AgentState
-from src.config import get_settings
-```
-
-2. Initialize agent:
-```python
-settings = get_settings()
-llm = ChatAnthropic(api_key=settings.anthropic_api_key)
-planner = PlannerAgent(llm=llm)
-```
-
-3. Use agent:
-```python
-state = AgentState(query="Your query")
-result = planner.run(state)
-print(result.complexity, result.strategy)
-```
+1. **Main Demo** - Basic workflow execution
+2. **Retry Scenario** - Demonstrates retry loop
+3. **Strategy Selection** - Shows different complexity handling
