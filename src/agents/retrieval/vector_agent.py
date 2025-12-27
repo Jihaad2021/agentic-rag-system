@@ -2,63 +2,97 @@
 Vector Search Agent - Operational Level 3 Agent.
 
 Performs semantic search using vector embeddings.
-This is a MOCK implementation for testing the coordinator.
-
-Real implementation will use:
-- ChromaDB for vector storage
-- Voyage AI for embeddings
-- Cosine similarity for ranking
+Uses ChromaDB for storage and Voyage AI for embeddings.
 """
 
-from typing import List
-import random
+from typing import List, Optional
 
 from src.agents.base_agent import BaseAgent
 from src.models.agent_state import AgentState, Chunk
+from src.storage.vector_store import VectorStore, VectorStoreError
+from src.ingestion.embedder import EmbeddingGenerator, EmbeddingError
 from src.utils.exceptions import RetrievalError
+from src.config import get_settings
 
 
 class VectorSearchAgent(BaseAgent):
     """
-    Vector Search Agent - Semantic retrieval (MOCK).
+    Vector Search Agent - Semantic retrieval using ChromaDB.
     
     Performs semantic search using vector embeddings to find
-    contextually similar chunks.
-    
-    NOTE: This is a mock implementation that returns dummy chunks.
-    Real implementation will integrate with ChromaDB and Voyage AI.
+    contextually similar chunks from ChromaDB.
     
     Attributes:
         top_k: Number of chunks to retrieve
-        mock_mode: If True, returns dummy chunks (default: True)
+        vector_store: ChromaDB vector store instance
+        embedder: Voyage AI embedding generator
+        mock_mode: If True, returns dummy chunks (for testing)
         
     Example:
-        >>> agent = VectorSearchAgent(top_k=10)
+        >>> # Real mode
+        >>> agent = VectorSearchAgent(top_k=10, mock_mode=False)
         >>> state = AgentState(query="What is Python?")
         >>> result = agent.run(state)
         >>> print(len(result.chunks))  # 10
+        
+        >>> # Mock mode (for testing)
+        >>> agent = VectorSearchAgent(top_k=5, mock_mode=True)
     """
     
-    def __init__(self, top_k: int = 10, mock_mode: bool = True):
+    def __init__(
+        self,
+        top_k: int = None,
+        mock_mode: bool = True,
+        vector_store: VectorStore = None,
+        embedder: EmbeddingGenerator = None
+    ):
         """
         Initialize Vector Search Agent.
         
         Args:
-            top_k: Number of chunks to retrieve
-            mock_mode: Use mock data (default: True)
+            top_k: Number of chunks to retrieve (default from config)
+            mock_mode: Use mock data (default: True for backward compatibility)
+            vector_store: VectorStore instance (created if None)
+            embedder: EmbeddingGenerator instance (created if None)
         
         Example:
-            >>> agent = VectorSearchAgent(top_k=5)
+            >>> # Real mode with auto-initialization
+            >>> agent = VectorSearchAgent(top_k=10, mock_mode=False)
+            
+            >>> # Real mode with custom instances
+            >>> store = VectorStore()
+            >>> embedder = EmbeddingGenerator()
+            >>> agent = VectorSearchAgent(
+            ...     vector_store=store,
+            ...     embedder=embedder,
+            ...     mock_mode=False
+            ... )
         """
-        super().__init__(name="vector_search", version="1.0.0")
+        super().__init__(name="vector_search", version="2.0.0")
         
-        self.top_k = top_k
+        settings = get_settings()
+        self.top_k = top_k or settings.vector_search_top_k
         self.mock_mode = mock_mode
         
-        self.log(
-            f"Initialized in {'MOCK' if mock_mode else 'REAL'} mode with top_k={top_k}",
-            level="debug"
-        )
+        # Initialize vector store and embedder (only if not mock mode)
+        if not mock_mode:
+            self.vector_store = vector_store or VectorStore()
+            self.embedder = embedder or EmbeddingGenerator()
+            
+            self.log(
+                f"Initialized in REAL mode: "
+                f"top_k={self.top_k}, "
+                f"collection={self.vector_store.collection_name}",
+                level="info"
+            )
+        else:
+            self.vector_store = None
+            self.embedder = None
+            
+            self.log(
+                f"Initialized in MOCK mode with top_k={self.top_k}",
+                level="debug"
+            )
     
     def execute(self, state: AgentState) -> AgentState:
         """
@@ -106,6 +140,62 @@ class VectorSearchAgent(BaseAgent):
                 retrieval_type="vector",
                 message=f"Vector search failed: {str(e)}",
                 details={"query": state.query}
+            ) from e
+    
+    def _real_search(self, query: str) -> List[Chunk]:
+        """
+        Real vector search using ChromaDB and Voyage AI.
+        
+        Args:
+            query: User query string
+        
+        Returns:
+            List of chunks from vector database
+        
+        Raises:
+            EmbeddingError: If embedding generation fails
+            VectorStoreError: If search fails
+        """
+        try:
+            # Step 1: Generate query embedding
+            self.log("Generating query embedding...", level="debug")
+            query_embedding = self.embedder.generate_query_embedding(query)
+            
+            # Step 2: Search in vector store
+            self.log(f"Searching vector store (top_k={self.top_k})...", level="debug")
+            search_results = self.vector_store.search(
+                query_embedding=query_embedding,
+                top_k=self.top_k
+            )
+            
+            # Step 3: Convert to Chunk objects
+            chunks = []
+            for result in search_results:
+                chunk = Chunk(
+                    text=result['text'],
+                    doc_id=result['metadata'].get('doc_id', 'unknown'),
+                    chunk_id=result['chunk_id'],
+                    score=result['score'],
+                    metadata=result['metadata']
+                )
+                chunks.append(chunk)
+            
+            return chunks
+            
+        except EmbeddingError as e:
+            self.log(f"Embedding generation failed: {str(e)}", level="error")
+            raise RetrievalError(
+                retrieval_type="vector",
+                message=f"Failed to generate query embedding: {str(e)}",
+                details={"query": query}
+            ) from e
+            
+        except VectorStoreError as e:
+            self.log(f"Vector store search failed: {str(e)}", level="error")
+            raise RetrievalError(
+                retrieval_type="vector",
+                message=f"Vector store search failed: {str(e)}",
+                details={"query": query}
             ) from e
     
     def _mock_search(self, query: str) -> List[Chunk]:
@@ -175,23 +265,3 @@ class VectorSearchAgent(BaseAgent):
             chunks.append(chunk)
         
         return chunks
-    
-    def _real_search(self, query: str) -> List[Chunk]:
-        """
-        Real vector search implementation.
-        
-        TODO: Implement in Week 4
-        - Embed query using Voyage AI
-        - Search ChromaDB
-        - Return top-k by cosine similarity
-        
-        Args:
-            query: User query string
-        
-        Returns:
-            List of chunks from vector DB
-        """
-        raise NotImplementedError(
-            "Real vector search not implemented yet. "
-            "Will be implemented in Week 4."
-        )
