@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     database_url: str = Field(default="postgresql://localhost:5432/agentic_rag", description="PostgreSQL connection string")
     redis_url: str = Field(default="redis://localhost:6379", description="Redis connection string")
     chroma_persist_dir: str = Field(default="./data/chroma", description="ChromaDB persistence directory")
+    collection_name: str = Field(default="documents", description="ChromaDB collection name")
+    vector_search_top_k: int = Field(default=10, description="Number of chunks for vector search", gt=0)
     
     # ===== Model Configuration =====
     llm_model: str = Field(default="claude-3-5-sonnet-20241022", description="Claude model to use")
