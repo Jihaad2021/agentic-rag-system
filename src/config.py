@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     vector_search_top_k: int = Field(default=10, description="Number of chunks for vector search", gt=0)
     
     # ===== Model Configuration =====
-    llm_model: str = Field(default="claude-3-5-sonnet-20241022", description="Claude model to use")
+    llm_model: str = Field(default="claude-3-haiku-20240307", description="Claude model to use")
     llm_temperature: float = Field(default=0.0, description="LLM temperature (0.0-1.0)", ge=0.0, le=1.0)
     llm_max_tokens: int = Field(default=4096, description="Maximum tokens for LLM response", gt=0)
     embedding_model: str = Field(default="voyage-large-2", description="Voyage AI embedding model")
