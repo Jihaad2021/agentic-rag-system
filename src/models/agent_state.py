@@ -56,6 +56,12 @@ class AgentState(BaseModel):
     answer: Optional[str] = None
     citations: List[str] = Field(default_factory=list)
     
+    # Critic outputs
+    critic_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    critic_feedback: Optional[str] = None
+    critic_scores: Optional[Dict[str, float]] = None
+    critic_decision: Optional[Any] = None
+
     # Metadata
     metadata: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.now)
