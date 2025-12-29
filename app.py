@@ -20,6 +20,7 @@ from rag_poc import (
 from src.ingestion.hierarchical_chunker import HierarchicalChunker
 from src.storage.chroma_store import ChromaVectorStore 
 from src.evaluation.simple_evaluator import SimpleEvaluator
+from src.ingestion.embedder import EmbeddingGenerator
 
 # Keep old components for comparison
 from rag_poc import TextChunker, SimpleVectorStore
@@ -63,6 +64,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+st.session_state.embedder = EmbeddingGenerator()
 
 def init_session_state():
     """Initialize session state variables."""
@@ -542,87 +544,148 @@ def display_chat_interface():
 
 
 def process_user_query(query: str):
-    """Process user query with hierarchical support."""
+    """Process user query and generate response with self-reflection."""
     
-    try:
-        # Add user message
-        st.session_state.messages.append({
-            "role": "user",
-            "content": query
-        })
-        
-        with st.chat_message("user"):
-            st.markdown(query)
-        
-        with st.chat_message("assistant"):
-            with st.spinner("🤔 Thinking..."):
-                
-                # Check documents
-                if not st.session_state.documents:
-                    error_msg = "❌ No documents uploaded."
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    return
-                
-                if not st.session_state.rag_initialized:
-                    error_msg = "❌ System not initialized."
-                    st.error(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                    return
-                
-                # Embed query
-                query_embedding = st.session_state.embedder.embed_query(query)
-                
-                # Search - HIERARCHICAL OR FLAT ← NEW LOGIC
-                if st.session_state.chunking_mode == 'hierarchical':
-                    # Use hierarchical search
-                    relevant_chunks = st.session_state.vector_store.search(
-                        query_embedding, 
-                        top_k=5,
-                        return_parent=True
-                    )
-                else:
-                    # Use flat search (old way)
-                    relevant_chunks = st.session_state.vector_store.search(
-                        query_embedding, 
-                        top_k=5
-                    )
-                
-                if not relevant_chunks:
-                    warning_msg = "⚠️ No relevant information found."
-                    st.warning(warning_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": warning_msg})
-                    return
-                
-                # Generate answer
-                result = st.session_state.generator.generate(
-                    query, 
-                    relevant_chunks,
-                    max_chunks=5
+    print("\n" + "="*60)
+    print(f"🔍 DEBUG: process_user_query called with: {query}")
+    print("="*60)
+    
+    if not st.session_state.rag_initialized:
+        print("❌ DEBUG: RAG not initialized!")
+        st.error("Please upload a document first!")
+        return
+    
+    print("✅ DEBUG: RAG initialized")
+    
+    # Add user message
+    st.session_state.messages.append({
+        "role": "user",
+        "content": query
+    })
+    print(f"✅ DEBUG: User message added. Total messages: {len(st.session_state.messages)}")
+    
+    # Retrieve chunks
+    with st.spinner("🔍 Retrieving relevant chunks..."):
+        try:
+            print("🔍 DEBUG: Generating embedding...")
+            query_embedding = st.session_state.embedder.generate_query_embedding(query)
+            print(f"✅ DEBUG: Embedding generated. Length: {len(query_embedding)}")
+            
+            print("🔍 DEBUG: Searching vector store...")
+            search_results = st.session_state.vector_store.search(
+                query_embedding=query_embedding,
+                top_k=10,
+                return_parent=True
+            )
+            print(f"✅ DEBUG: Search complete. Results: {len(search_results)}")
+            
+            # Convert to Chunk objects
+            from src.models.agent_state import Chunk
+            
+            chunks = []
+            for i, result in enumerate(search_results):
+                print(f"   Converting result {i+1}: {result['chunk_id'][:30]}...")
+                chunk = Chunk(
+                    text=result['text'],
+                    doc_id='unknown',
+                    chunk_id=result['chunk_id'],
+                    score=result['score'],
+                    metadata={
+                        'filename': 'uploaded_document',
+                        'chunk_type': result.get('chunk_type', 'child'),
+                        **result.get('metadata', {})
+                    }
                 )
-                
-                # Display answer
-                st.markdown(result['answer'])
-                
-                # Display citations
-                if result['citations']:
-                    with st.expander("📚 View Sources", expanded=False):
-                        for citation in result['citations']:
-                            st.caption(f"**Source {citation['source_number']}** (Relevance: {citation['score']:.2%})")
-                            st.text(citation['text_preview'])
-                
-                # Save to history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": result['answer'],
-                    "citations": result['citations']
-                })
-                
-    except Exception as e:
-        error_msg = f"❌ Error: {str(e)}"
-        st.error(error_msg)
-        st.session_state.messages.append({"role": "assistant", "content": error_msg})
-
+                chunks.append(chunk)
+            
+            print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects")
+            
+        except Exception as e:
+            print(f"❌ DEBUG: Error in retrieval: {e}")
+            import traceback
+            traceback.print_exc()
+            st.error(f"Error retrieving chunks: {e}")
+            return
+    
+    if not chunks:
+        print("⚠️ DEBUG: No chunks found!")
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "I couldn't find relevant information to answer your question."
+        })
+        return
+    
+    print(f"✅ DEBUG: {len(chunks)} chunks ready for generation")
+    
+    # Generate answer with self-reflection
+    with st.spinner("✍️ Generating answer with self-reflection..."):
+        try:
+            print("🔍 DEBUG: Importing agents...")
+            from src.agents.writer import WriterAgent
+            from src.agents.critic import CriticAgent
+            from src.agents.self_reflection import SelfReflectionLoop
+            from src.models.agent_state import AgentState
+            
+            print("🔍 DEBUG: Initializing agents...")
+            writer = WriterAgent()
+            critic = CriticAgent(quality_threshold=0.7)
+            loop = SelfReflectionLoop(
+                writer=writer,
+                critic=critic,
+                max_iterations=3
+            )
+            print("✅ DEBUG: Agents initialized")
+            
+            print("🔍 DEBUG: Creating AgentState...")
+            state = AgentState(query=query, chunks=chunks)
+            print(f"✅ DEBUG: State created with {len(state.chunks)} chunks")
+            
+            print("🔍 DEBUG: Running self-reflection loop...")
+            result = loop.run(state)
+            print("✅ DEBUG: Self-reflection complete")
+            
+            print(f"📝 DEBUG: Answer length: {len(result.answer)} chars")
+            
+            # Extract metadata
+            reflection_stats = result.metadata.get("self_reflection", {})
+            print(f"📊 DEBUG: Reflection stats: {reflection_stats}")
+            
+        except Exception as e:
+            print(f"❌ DEBUG: Error in generation: {e}")
+            import traceback
+            traceback.print_exc()
+            st.error(f"Error generating answer: {e}")
+            return
+    
+    print("🔍 DEBUG: Preparing citations...")
+    # Prepare citations
+    citations = []
+    for i, chunk in enumerate(chunks[:5], 1):
+        citations.append({
+            "source_number": i,
+            "text_preview": chunk.text[:200],
+            "score": chunk.score or 0.0
+        })
+    print(f"✅ DEBUG: {len(citations)} citations prepared")
+    
+    print("🔍 DEBUG: Adding assistant message...")
+    # Add assistant message
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": result.answer,
+        "citations": citations,
+        "self_reflection": {
+            "iterations": reflection_stats.get("iterations", 0),
+            "final_score": reflection_stats.get("final_score", 0.0),
+            "improved": reflection_stats.get("improved", False),
+            "decision": reflection_stats.get("final_decision", "unknown")
+        }
+    })
+    
+    print(f"✅ DEBUG: Assistant message added. Total messages: {len(st.session_state.messages)}")
+    print("="*60)
+    print("✅ DEBUG: process_user_query COMPLETE")
+    print("="*60 + "\n")
 
 def display_footer():
     """Display footer with info."""
@@ -971,7 +1034,6 @@ def display_document_preview():
 def display_chat_messages():
     """Display chat message history."""
     
-    # Welcome message
     if not st.session_state.messages:
         st.markdown("""
         ### 👋 Welcome to Agentic RAG System!
@@ -980,25 +1042,52 @@ def display_chat_messages():
         
         **Features:**
         - 🔺 Hierarchical chunking for better context
-        - 💾 Persistent storage with ChromaDB
+        - 🔄 Self-reflection (Writer-Critic loop)
         - 📊 Quality evaluation metrics
         - 🎯 Intelligent retrieval
         """)
         return
     
-    # Display chat history
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             
-            # Show citations if available
+            # Show self-reflection info (NEW)
+            if message["role"] == "assistant" and "self_reflection" in message:
+                reflection = message["self_reflection"]
+                
+                # Create compact info box
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    iterations = reflection.get("iterations", 0)
+                    emoji = "🔄" if iterations > 0 else "✅"
+                    st.metric("Iterations", f"{emoji} {iterations}")
+                
+                with col2:
+                    score = reflection.get("final_score", 0.0)
+                    color = "🟢" if score >= 0.8 else "🟡" if score >= 0.6 else "🔴"
+                    st.metric("Quality Score", f"{color} {score:.2f}")
+                
+                with col3:
+                    improved = reflection.get("improved", False)
+                    st.metric("Improved", "✅ Yes" if improved else "➖ No")
+                
+                with col4:
+                    decision = reflection.get("decision", "unknown")
+                    st.metric("Status", decision.upper())
+            
+            # Show citations
             if message["role"] == "assistant" and "citations" in message:
                 if message["citations"]:
                     with st.expander("📚 View Sources", expanded=False):
                         for citation in message["citations"]:
-                            st.caption(f"**Source {citation['source_number']}** (Relevance: {citation['score']:.2%})")
+                            st.caption(
+                                f"**Source {citation['source_number']}** "
+                                f"(Relevance: {citation['score']:.2%})"
+                            )
                             st.text(citation['text_preview'])
-
+                            
 def display_chat_input():
     """Display chat input field (must be outside tabs)."""
     
