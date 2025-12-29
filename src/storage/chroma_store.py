@@ -74,68 +74,53 @@ class ChromaVectorStore:
     def add_chunks(
         self,
         parent_chunks: List[Chunk],
-        child_chunks: List[Chunk]
+        child_chunks: List[Chunk],
+        filename: str = "unknown"  # ← ADD PARAMETER
     ) -> None:
-        """
-        Add parent and child chunks to ChromaDB.
+        """Add chunks with filename metadata."""
         
-        Args:
-            parent_chunks: List of parent chunks with embeddings
-            child_chunks: List of child chunks with embeddings
-        """
         print(f"\n💾 Adding chunks to ChromaDB...")
         
         # Add parents
         if parent_chunks:
-            parent_ids = [p.chunk_id for p in parent_chunks]
-            parent_embeddings = [p.embedding for p in parent_chunks]
-            parent_documents = [p.text for p in parent_chunks]
             parent_metadatas = [
                 {
                     "chunk_type": "parent",
                     "token_count": p.token_count,
                     "start_idx": p.start_idx,
-                    "end_idx": p.end_idx
+                    "end_idx": p.end_idx,
+                    "filename": filename  # ← ADD THIS
                 }
                 for p in parent_chunks
             ]
             
             self.parent_collection.add(
-                ids=parent_ids,
-                embeddings=parent_embeddings,
-                documents=parent_documents,
+                ids=[p.chunk_id for p in parent_chunks],
+                embeddings=[p.embedding for p in parent_chunks],
+                documents=[p.text for p in parent_chunks],
                 metadatas=parent_metadatas
             )
-            
-            print(f"   ✅ Added {len(parent_chunks)} parents")
         
         # Add children
         if child_chunks:
-            child_ids = [c.chunk_id for c in child_chunks]
-            child_embeddings = [c.embedding for c in child_chunks]
-            child_documents = [c.text for c in child_chunks]
             child_metadatas = [
                 {
                     "chunk_type": "child",
                     "parent_id": c.parent_id if c.parent_id else "",
                     "token_count": c.token_count,
                     "start_idx": c.start_idx,
-                    "end_idx": c.end_idx
+                    "end_idx": c.end_idx,
+                    "filename": filename  # ← ADD THIS
                 }
                 for c in child_chunks
             ]
             
             self.child_collection.add(
-                ids=child_ids,
-                embeddings=child_embeddings,
-                documents=child_documents,
+                ids=[c.chunk_id for c in child_chunks],
+                embeddings=[c.embedding for c in child_chunks],
+                documents=[c.text for c in child_chunks],
                 metadatas=child_metadatas
-            )
-            
-            print(f"   ✅ Added {len(child_chunks)} children")
-        
-        print(f"   Total in DB: {self.parent_collection.count()} parents, {self.child_collection.count()} children")
-    
+            )    
     def search(
         self,
         query_embedding: List[float],

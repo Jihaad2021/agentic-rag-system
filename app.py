@@ -21,6 +21,7 @@ from src.ingestion.hierarchical_chunker import HierarchicalChunker
 from src.storage.chroma_store import ChromaVectorStore 
 from src.evaluation.simple_evaluator import SimpleEvaluator
 from src.ingestion.embedder import EmbeddingGenerator
+from src.models.agent_state import Chunk
 
 # Keep old components for comparison
 from rag_poc import TextChunker, SimpleVectorStore
@@ -93,6 +94,12 @@ def init_session_state():
     # Chunking mode selection ← NEW
     if 'chunking_mode' not in st.session_state:
         st.session_state.chunking_mode = 'hierarchical'  # 'flat' or 'hierarchical'
+    
+    # RAG components - FORCE REINITIALIZE
+    if 'embedder' not in st.session_state or not hasattr(st.session_state.embedder, 'generate'):
+        from src.ingestion.embedder import EmbeddingGenerator
+        st.session_state.embedder = EmbeddingGenerator()
+        print("✅ Embedder reinitialized with EmbeddingGenerator")
 
 
 def display_header():
@@ -354,7 +361,7 @@ def process_uploaded_file(uploaded_file):
         progress_bar.progress(10)
         
         if not st.session_state.rag_initialized:
-            st.session_state.embedder = Embedder()
+            st.session_state.embedder = EmbeddingGenerator()
             
             # Use ChromaDB instead of in-memory ← CHANGED
             from src.storage.chroma_store import ChromaVectorStore
@@ -416,18 +423,23 @@ def process_uploaded_file(uploaded_file):
         # Embed parents
         if parent_chunks:
             for parent in parent_chunks:
-                parent.embedding = st.session_state.embedder.embed_query(parent.text)
+                parent.embedding = st.session_state.embedder.generate([parent.text])[0]
         
         # Embed children
         for child in child_chunks:
-            child.embedding = st.session_state.embedder.embed_query(child.text)
-        
+            child.embedding = st.session_state.embedder.generate([child.text])[0]
+    
+
         # Step 5: Store
         status_text.text("💾 Storing in vector database...")
         progress_bar.progress(85)
         
         if st.session_state.chunking_mode == 'hierarchical':
-            st.session_state.vector_store.add_chunks(parent_chunks, child_chunks)
+            st.session_state.vector_store.add_chunks(
+                parent_chunks=parent_chunks,
+                child_chunks=child_chunks,
+                filename=uploaded_file.name  # ← ADD THIS LINE
+            )
             # Store for UI display
             st.session_state.parent_chunks.extend(parent_chunks)
             st.session_state.child_chunks.extend(child_chunks)
@@ -591,7 +603,7 @@ def process_user_query(query: str):
                     chunk_id=result['chunk_id'],
                     score=result['score'],
                     metadata={
-                        'filename': 'uploaded_document',
+                        'filename': result.get('metadata', {}).get('filename', 'uploaded_document'),
                         'chunk_type': result.get('chunk_type', 'child'),
                         **result.get('metadata', {})
                     }
@@ -739,229 +751,165 @@ def display_statistics():
         
         st.divider()
 def display_evaluation_interface():
-    """Display evaluation and testing interface."""
+    """Display evaluation interface with custom evaluator."""
     
-    st.header("📊 System Evaluation")
+    st.subheader("📊 System Evaluation")
     
-    tab1, tab2, tab3 = st.tabs(["Quick Test", "Batch Evaluation", "Performance"])
+    if not st.session_state.documents:
+        st.info("Upload documents first to run evaluation")
+        return
     
-    # TAB 1: Quick Test
-    with tab1:
-        st.subheader("🧪 Quick Quality Test")
+    st.markdown("""
+    **Custom Evaluation Metrics:**
+    - Citation Rate: Answers include proper citations
+    - Context Usage: Retrieved chunks are used in answers
+    - Answer Quality: Substantial and complete responses
+    - Self-Reflection: Improvement through regeneration
+    """)
+    
+    # Load test questions
+    import json
+    from pathlib import Path
+    
+    test_file = Path("data/test_questions.json")
+    
+    if not test_file.exists():
+        st.warning("⚠️ Test questions file not found: data/test_questions.json")
+        st.info("Create this file with your test questions first.")
+        return
+    
+    with open(test_file, 'r') as f:
+        test_data = json.load(f)
+    
+    questions = test_data.get('questions', [])
+    
+    if not questions:
+        st.warning("No questions found in test file")
+        return
+    
+    st.info(f"📝 Loaded {len(questions)} test questions")
+    
+    # Show sample questions
+    with st.expander("👁️ View Test Questions"):
+        for i, q in enumerate(questions, 1):
+            st.write(f"{i}. {q}")
+    
+    # Run evaluation button
+    if st.button("🚀 Run Evaluation", type="primary"):
+        from src.evaluation.simple_evaluator import SimpleEvaluator
+        from src.agents.writer import WriterAgent
+        from src.agents.critic import CriticAgent
+        from src.agents.self_reflection import SelfReflectionLoop
+        from src.models.agent_state import AgentState
         
-        if not st.session_state.documents:
-            st.warning("⚠️ Upload documents first to test the system.")
-            return
+        evaluator = SimpleEvaluator()
         
-        st.markdown("""
-        Test a single question and see quality metrics in real-time.
-        """)
+        # Initialize agents
+        writer = WriterAgent()
+        critic = CriticAgent(quality_threshold=0.7)
+        loop = SelfReflectionLoop(writer, critic, max_iterations=3)
         
-        # Test question
-        test_question = st.text_input(
-            "Test Question",
-            placeholder="What is this document about?",
-            key="eval_test_question"
+        # Process each question
+        all_answers = []
+        all_chunks_list = []
+        all_metadata = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, question in enumerate(questions):
+            status_text.text(f"Processing question {i+1}/{len(questions)}...")
+            
+            # Generate embedding
+            query_embedding = st.session_state.embedder.generate_query_embedding(question)
+            
+            # Search
+            search_results = st.session_state.vector_store.search(
+                query_embedding=query_embedding,
+                top_k=10,
+                return_parent=True
+            )
+            
+            # Convert to Chunk objects
+            from src.models.agent_state import Chunk
+            chunks = []
+            for result in search_results:
+                chunk = Chunk(
+                    text=result['text'],
+                    doc_id='unknown',
+                    chunk_id=result['chunk_id'],
+                    score=result['score'],
+                    metadata={'filename': 'uploaded_document'}
+                )
+                chunks.append(chunk)
+            
+            # Generate answer with self-reflection
+            state = AgentState(query=question, chunks=chunks)
+            result = loop.run(state)
+            
+            # Store results
+            all_answers.append(result.answer)
+            all_chunks_list.append(chunks)
+            all_metadata.append(result.metadata.get('self_reflection', {}))
+            
+            progress_bar.progress((i + 1) / len(questions))
+        
+        status_text.empty()
+        progress_bar.empty()
+        
+        # Evaluate
+        results = evaluator.evaluate_batch(
+            questions, all_answers, all_chunks_list, all_metadata
         )
         
-        # Ground truth (optional)
-        ground_truth = st.text_area(
-            "Expected Answer (Optional)",
-            placeholder="Enter the ideal answer for comparison...",
-            key="eval_ground_truth"
-        )
+        # Display results
+        st.success("✅ Evaluation Complete!")
         
-        if st.button("🧪 Run Test", type="primary"):
-            if not test_question:
-                st.error("Please enter a test question")
-            else:
-                with st.spinner("Testing..."):
-                    try:
-                        # Get answer from system
-                        query_embedding = st.session_state.embedder.embed_query(test_question)
-                        relevant_chunks = st.session_state.vector_store.search(
-                            query_embedding, 
-                            top_k=5,
-                            return_parent=True if st.session_state.chunking_mode == 'hierarchical' else False
-                        )
-                        
-                        result = st.session_state.generator.generate(
-                            test_question, 
-                            relevant_chunks,
-                            max_chunks=5
-                        )
-                        
-                        # Evaluate
-                        evaluator = SimpleEvaluator()
-                        contexts = [chunk['text'] for chunk in relevant_chunks]
-                        
-                        scores = evaluator.evaluate_single(
-                            question=test_question,
-                            answer=result['answer'],
-                            contexts=contexts,
-                            ground_truth=ground_truth if ground_truth else None
-                        )
-                        
-                        # Display results
-                        st.success("✅ Test Complete!")
-                        
-                        # Show answer
-                        st.markdown("### 💬 Generated Answer:")
-                        st.info(result['answer'])
-                        
-                        # Show scores
-                        st.markdown("### 📊 Quality Metrics:")
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            score_color = "🟢" if scores['relevancy'] >= 0.7 else "🟡" if scores['relevancy'] >= 0.5 else "🔴"
-                            st.metric("Relevancy", f"{scores['relevancy']:.2f}", score_color)
-                        
-                        with col2:
-                            score_color = "🟢" if scores['faithfulness'] >= 0.7 else "🟡" if scores['faithfulness'] >= 0.5 else "🔴"
-                            st.metric("Faithfulness", f"{scores['faithfulness']:.2f}", score_color)
-                        
-                        with col3:
-                            score_color = "🟢" if scores['completeness'] >= 0.7 else "🟡" if scores['completeness'] >= 0.5 else "🔴"
-                            st.metric("Completeness", f"{scores['completeness']:.2f}", score_color)
-                        
-                        with col4:
-                            score_color = "🟢" if scores['overall'] >= 0.7 else "🟡" if scores['overall'] >= 0.5 else "🔴"
-                            st.metric("Overall", f"{scores['overall']:.2f}", score_color)
-                        
-                        if ground_truth:
-                            st.metric("Similarity to Expected", f"{scores['similarity']:.2f}")
-                        
-                        # Score interpretation
-                        st.markdown("---")
-                        st.caption("""
-                        **Score Guide:**  
-                        🟢 >= 0.7: Good | 🟡 0.5-0.7: Moderate | 🔴 < 0.5: Needs Improvement
-                        """)
-                        
-                    except Exception as e:
-                        st.error(f"Error during evaluation: {str(e)}")
-    
-    # TAB 2: Batch Evaluation
-    with tab2:
-        st.subheader("📋 Batch Evaluation")
+        st.markdown("### 📊 Overall Metrics")
         
-        st.markdown("""
-        Test multiple questions at once to measure overall system performance.
-        """)
+        col1, col2, col3, col4 = st.columns(4)
         
-        # Sample test questions
-        if st.button("📝 Use Sample Questions"):
-            st.session_state.batch_questions = [
-                "What is this document about?",
-                "Summarize the main points",
-                "What are the key findings?"
-            ]
+        with col1:
+            score = results['avg_overall']
+            color = "🟢" if score >= 0.7 else "🟡" if score >= 0.5 else "🔴"
+            st.metric("Overall Quality", f"{color} {score:.1%}")
         
-        # Input area
-        batch_input = st.text_area(
-            "Test Questions (one per line)",
-            value="\n".join(st.session_state.get('batch_questions', [])),
-            height=150,
-            key="batch_questions_input"
-        )
+        with col2:
+            st.metric("Citation Rate", f"{results['avg_citation_rate']:.1%}")
         
-        if st.button("🚀 Run Batch Evaluation", type="primary"):
-            if not batch_input.strip():
-                st.error("Please enter at least one question")
-            else:
-                questions = [q.strip() for q in batch_input.split('\n') if q.strip()]
-                
-                with st.spinner(f"Evaluating {len(questions)} questions..."):
-                    try:
-                        evaluator = SimpleEvaluator()
-                        
-                        all_answers = []
-                        all_contexts = []
-                        
-                        # Get answers for all questions
-                        progress_bar = st.progress(0)
-                        for i, question in enumerate(questions):
-                            query_embedding = st.session_state.embedder.embed_query(question)
-                            relevant_chunks = st.session_state.vector_store.search(
-                                query_embedding, top_k=5
-                            )
-                            
-                            result = st.session_state.generator.generate(
-                                question, relevant_chunks
-                            )
-                            
-                            all_answers.append(result['answer'])
-                            all_contexts.append([chunk['text'] for chunk in relevant_chunks])
-                            
-                            progress_bar.progress((i + 1) / len(questions))
-                        
-                        # Evaluate
-                        scores = evaluator.evaluate_rag_system(
-                            questions=questions,
-                            answers=all_answers,
-                            contexts=all_contexts
-                        )
-                        
-                        # Display results
-                        st.success(f"✅ Evaluated {len(questions)} questions!")
-                        
-                        st.markdown("### 📊 Overall Performance:")
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            st.metric("Relevancy", f"{scores['relevancy']:.3f}")
-                        with col2:
-                            st.metric("Faithfulness", f"{scores['faithfulness']:.3f}")
-                        with col3:
-                            st.metric("Completeness", f"{scores['completeness']:.3f}")
-                        with col4:
-                            score_color = "🟢" if scores['overall'] >= 0.7 else "🟡" if scores['overall'] >= 0.5 else "🔴"
-                            st.metric("Overall Score", f"{scores['overall']:.3f}", score_color)
-                        
-                        # Performance assessment
-                        if scores['overall'] >= 0.7:
-                            st.success("🎉 **Excellent Performance!** System is working well.")
-                        elif scores['overall'] >= 0.5:
-                            st.warning("⚠️ **Moderate Performance.** Consider improvements.")
-                        else:
-                            st.error("❌ **Needs Improvement.** System requires tuning.")
-                        
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-    
-    # TAB 3: Performance Stats
-    with tab3:
-        st.subheader("⚡ Performance Statistics")
+        with col3:
+            st.metric("Context Usage", f"{results['avg_context_usage']:.1%}")
         
-        if st.session_state.documents:
-            stats = st.session_state.vector_store.get_stats()
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 📦 Storage Metrics")
-                st.metric("Total Documents", len(st.session_state.documents))
-                st.metric("Total Vectors", stats['total_vectors'])
-                st.metric("Parent Chunks", stats['total_parents'])
-                st.metric("Child Chunks", stats['total_children'])
-            
-            with col2:
-                st.markdown("### 💬 Usage Metrics")
-                total_queries = len([m for m in st.session_state.messages if m['role'] == 'user'])
-                st.metric("Total Queries", total_queries)
-                
-                if total_queries > 0:
-                    avg_answer_length = np.mean([
-                        len(m['content']) 
-                        for m in st.session_state.messages 
-                        if m['role'] == 'assistant'
-                    ])
-                    st.metric("Avg Answer Length", f"{avg_answer_length:.0f} chars")
-        else:
-            st.info("Upload documents to see performance statistics")
+        with col4:
+            st.metric("Improvement Rate", f"{results['improvement_rate']:.1%}")
+        
+        # Additional metrics
+        col5, col6 = st.columns(2)
+        
+        with col5:
+            st.metric("Avg Quality Score", f"{results['avg_quality_score']:.1%}")
+        
+        with col6:
+            st.metric("Avg Word Count", f"{results['avg_word_count']:.0f}")
+        
+        # Detailed results table
+        st.markdown("### 📋 Detailed Results")
+        
+        import pandas as pd
+        
+        df_data = []
+        for score in results['detailed_scores']:
+            df_data.append({
+                'Question': score['query'][:50] + '...',
+                'Overall': f"{score['overall']:.1%}",
+                'Citations': '✅' if score['has_citations'] else '❌',
+                'Words': score['word_count'],
+                'Improved': '✅' if score['was_improved'] else '➖',
+                'Iterations': score['iterations']
+            })
+        
+        df = pd.DataFrame(df_data)
+        st.dataframe(df, use_container_width=True)
 
 def display_document_preview():
     """Show preview of uploaded documents."""
