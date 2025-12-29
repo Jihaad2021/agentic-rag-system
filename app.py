@@ -557,6 +557,8 @@ def display_chat_interface():
 
 def process_user_query(query: str):
     """Process user query and generate response with self-reflection."""
+    import time
+    start_time = time.time()
 
     from src.models.agent_state import AgentState, Chunk  # ← ADD THIS LINE
     from src.agents.query_decomposer import QueryDecomposer
@@ -724,6 +726,27 @@ def process_user_query(query: str):
     print("="*60)
     print("✅ DEBUG: process_user_query COMPLETE")
     print("="*60 + "\n")
+
+    # Calculate latency
+    latency = time.time() - start_time
+    
+    # Track performance
+    if 'performance_tracker' not in st.session_state:
+        from src.monitoring.performance_tracker import PerformanceTracker
+        st.session_state.performance_tracker = PerformanceTracker()
+    
+    is_multihop = temp_state.sub_queries and len(temp_state.sub_queries) > 1
+    
+    st.session_state.performance_tracker.track_query(
+        query=query,
+        latency=latency,
+        chunks_retrieved=len(chunks),
+        strategy="multi_hop" if is_multihop else "simple",
+        iterations=reflection_stats.get("iterations", 0),
+        cache_hit=False
+    )
+    
+    print(f"⏱️  Query processed in {latency:.2f}s")
 
 def display_footer():
     """Display footer with info."""
@@ -1102,7 +1125,7 @@ def main():
     sidebar()
    
     # Main content tabs
-    tab1, tab2, tab3 = st.tabs(["💬 Chat", "📊 Evaluation", "📈 Statistics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📊 Evaluation", "📈 Statistics", "⚡ Performance"])
     
     with tab1:
         # Display chat history (inside tab OK)
@@ -1116,7 +1139,56 @@ def main():
         # Statistics and preview
         display_statistics()
         display_document_preview()
-    
+
+    with tab4:
+        st.subheader("⚡ Performance Metrics")
+        
+        if 'performance_tracker' in st.session_state:
+            stats = st.session_state.performance_tracker.get_stats()
+            
+            if stats:
+                # Key metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Total Queries", stats['total_queries'])
+                
+                with col2:
+                    avg_lat = stats['avg_latency_ms'] / 1000
+                    color = "🟢" if avg_lat < 3 else "🟡" if avg_lat < 5 else "🔴"
+                    st.metric("Avg Latency", f"{color} {avg_lat:.2f}s")
+                
+                with col3:
+                    st.metric("Cache Hit Rate", f"{stats['cache_hit_rate']:.1%}")
+                
+                with col4:
+                    st.metric("Avg Chunks", f"{stats['avg_chunks']:.1f}")
+                
+                # Latency breakdown
+                st.markdown("### ⏱️ Latency Breakdown")
+                
+                col5, col6 = st.columns(2)
+                
+                with col5:
+                    st.metric("Min Latency", f"{stats['min_latency_ms']/1000:.2f}s")
+                
+                with col6:
+                    st.metric("Max Latency", f"{stats['max_latency_ms']/1000:.2f}s")
+                
+                # Session info
+                st.info(f"📊 Session Duration: {stats['session_duration_min']:.1f} minutes")
+                
+                # Save metrics button
+                if st.button("💾 Save Metrics"):
+                    st.session_state.performance_tracker.save_metrics()
+                    st.success("✅ Metrics saved to data/metrics.json")
+            
+            else:
+                st.info("No queries processed yet. Ask some questions to see metrics!")
+        
+        else:
+            st.info("Performance tracking will start after your first query.")
+
     # Chat input MUST be outside tabs
     display_chat_input()
     
