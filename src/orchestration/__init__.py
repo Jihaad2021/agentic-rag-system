@@ -1,9 +1,5 @@
-"""
-Orchestration package.
+"""Orchestration modules."""
 
-Contains LangGraph workflow for agent coordination.
-"""
+from src.orchestration.multihop_handler import MultiHopHandler
 
-from src.orchestration.langgraph_workflow import AgenticRAGWorkflow
-
-__all__ = ["AgenticRAGWorkflow"]
+__all__ = ['MultiHopHandler']

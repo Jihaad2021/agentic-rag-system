@@ -557,7 +557,11 @@ def display_chat_interface():
 
 def process_user_query(query: str):
     """Process user query and generate response with self-reflection."""
-    
+
+    from src.models.agent_state import AgentState, Chunk  # ← ADD THIS LINE
+    from src.agents.query_decomposer import QueryDecomposer
+    from src.orchestration.multihop_handler import MultiHopHandler
+
     print("\n" + "="*60)
     print(f"🔍 DEBUG: process_user_query called with: {query}")
     print("="*60)
@@ -583,52 +587,74 @@ def process_user_query(query: str):
             query_embedding = st.session_state.embedder.generate_query_embedding(query)
             print(f"✅ DEBUG: Embedding generated. Length: {len(query_embedding)}")
             
-            print("🔍 DEBUG: Searching vector store...")
-            search_results = st.session_state.vector_store.search(
-                query_embedding=query_embedding,
-                top_k=10,
-                return_parent=True
-            )
-            print(f"✅ DEBUG: Search complete. Results: {len(search_results)}")
+            # NEW: Check if decomposition needed
+            print("🔍 DEBUG: Checking if decomposition needed...")
+            from src.agents.query_decomposer import QueryDecomposer
+            from src.orchestration.multihop_handler import MultiHopHandler
             
-            # Convert to Chunk objects
-            from src.models.agent_state import Chunk
+            decomposer = QueryDecomposer()
+            temp_state = AgentState(query=query)
+            temp_state = decomposer.run(temp_state)
             
-            chunks = []
-            for i, result in enumerate(search_results):
-                print(f"   Converting result {i+1}: {result['chunk_id'][:30]}...")
-                chunk = Chunk(
-                    text=result['text'],
-                    doc_id='unknown',
-                    chunk_id=result['chunk_id'],
-                    score=result['score'],
-                    metadata={
-                        'filename': result.get('metadata', {}).get('filename', 'uploaded_document'),
-                        'chunk_type': result.get('chunk_type', 'child'),
-                        **result.get('metadata', {})
-                    }
+            if temp_state.sub_queries and len(temp_state.sub_queries) > 1:
+                # Multi-hop processing
+                print(f"🔀 DEBUG: Multi-hop detected. {len(temp_state.sub_queries)} sub-queries")
+                
+                st.info(f"🔀 Complex query detected. Decomposed into {len(temp_state.sub_queries)} sub-questions")
+                
+                with st.expander("👁️ View Sub-questions"):
+                    for i, sq in enumerate(temp_state.sub_queries, 1):
+                        st.write(f"{i}. {sq}")
+                
+                # Process all sub-queries
+                handler = MultiHopHandler()
+                chunks = handler.process_sub_queries(
+                    temp_state.sub_queries,
+                    st.session_state.vector_store,
+                    st.session_state.embedder,
+                    top_k=5
                 )
-                chunks.append(chunk)
-            
-            print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects")
-            
+                
+                # Convert already Chunk objects, no need to convert again
+                print(f"✅ DEBUG: Multi-hop complete. {len(chunks)} chunks")
+                
+            else:
+                # Simple query - normal retrieval
+                print("🔍 DEBUG: Simple query, normal retrieval...")
+                
+                search_results = st.session_state.vector_store.search(
+                    query_embedding=query_embedding,
+                    top_k=10,
+                    return_parent=True
+                )
+                print(f"✅ DEBUG: Search complete. Results: {len(search_results)}")
+                
+                # Convert to Chunk objects
+                from src.models.agent_state import Chunk
+                
+                chunks = []
+                for result in search_results:
+                    chunk = Chunk(
+                        text=result['text'],
+                        doc_id='unknown',
+                        chunk_id=result['chunk_id'],
+                        score=result['score'],
+                        metadata={
+                            'filename': result.get('metadata', {}).get('filename', 'uploaded_document'),
+                            'chunk_type': result.get('chunk_type', 'child'),
+                            **result.get('metadata', {})
+                        }
+                    )
+                    chunks.append(chunk)
+                
+                print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects")
+                
         except Exception as e:
             print(f"❌ DEBUG: Error in retrieval: {e}")
             import traceback
             traceback.print_exc()
             st.error(f"Error retrieving chunks: {e}")
             return
-    
-    if not chunks:
-        print("⚠️ DEBUG: No chunks found!")
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": "I couldn't find relevant information to answer your question."
-        })
-        return
-    
-    print(f"✅ DEBUG: {len(chunks)} chunks ready for generation")
-    
     # Generate answer with self-reflection
     with st.spinner("✍️ Generating answer with self-reflection..."):
         try:
