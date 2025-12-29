@@ -43,6 +43,9 @@ class AgentState(BaseModel):
     # Planner outputs
     complexity: Optional[float] = Field(None, ge=0.0, le=1.0)
     strategy: Optional[Strategy] = None
+
+    # Query Decomposer field (NEW)
+    sub_queries: Optional[List[str]] = None  # ← ADD THIS
     
     # Retrieval outputs
     chunks: List[Chunk] = Field(default_factory=list)
