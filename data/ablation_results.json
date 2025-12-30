@@ -1,0 +1,130 @@
+{
+  "baseline": [
+    {
+      "method": "baseline",
+      "chunks": 2,
+      "time": 1.3895258903503418,
+      "avg_score": 0.7032215447576344
+    },
+    {
+      "method": "baseline",
+      "chunks": 2,
+      "time": 0.3632810115814209,
+      "avg_score": 0.6357717186050382
+    },
+    {
+      "method": "baseline",
+      "chunks": 2,
+      "time": 0.3983039855957031,
+      "avg_score": 0.6827101756789956
+    },
+    {
+      "method": "baseline",
+      "chunks": 2,
+      "time": 0.45377588272094727,
+      "avg_score": 0.6680504337381701
+    },
+    {
+      "method": "baseline",
+      "chunks": 2,
+      "time": 0.37575817108154297,
+      "avg_score": 0.6323375945225032
+    }
+  ],
+  "hierarchical": [
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.3087131977081299,
+      "avg_score": 0.7032215447576344
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.31124186515808105,
+      "avg_score": 0.6357717186050382
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.40955114364624023,
+      "avg_score": 0.6827101756789956
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.3093559741973877,
+      "avg_score": 0.6680504337381701
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.3068661689758301,
+      "avg_score": 0.6323375945225032
+    }
+  ],
+  "hybrid": [
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.40390920639038086,
+      "avg_score": 0.7032215447576344
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.5089519023895264,
+      "avg_score": 0.6357717186050382
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.30457401275634766,
+      "avg_score": 0.6827101756789956
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.3061709403991699,
+      "avg_score": 0.6680504337381701
+    },
+    {
+      "method": "hierarchical",
+      "chunks": 2,
+      "time": 0.2833869457244873,
+      "avg_score": 0.6323375945225032
+    }
+  ],
+  "graph": [
+    {
+      "method": "graph",
+      "chunks": 0,
+      "time": 2.1946709156036377,
+      "avg_score": 0
+    },
+    {
+      "method": "graph",
+      "chunks": 2,
+      "time": 2.4703221321105957,
+      "avg_score": 12.962129995664803
+    },
+    {
+      "method": "graph",
+      "chunks": 0,
+      "time": 1.8993589878082275,
+      "avg_score": 0
+    },
+    {
+      "method": "graph",
+      "chunks": 0,
+      "time": 4.0278449058532715,
+      "avg_score": 0
+    },
+    {
+      "method": "graph",
+      "chunks": 2,
+      "time": 2.1911051273345947,
+      "avg_score": 12.630429302048682
+    }
+  ]
+}
