@@ -171,28 +171,40 @@ class RetrievalCoordinator(BaseAgent):
             ) from e
     
     def _spawn_swarm(self, query: str) -> List[Chunk]:
-        """
-        Spawn retrieval swarm and execute in parallel or sequential.
+        """Spawn retrieval swarm (private method)."""
         
-        Launches Vector, Keyword, and Graph agents to retrieve chunks
-        using different methods.
+        self.log(f"Spawning retrieval swarm for: {query}")
         
-        Args:
-            query: User query string
+        # Collect available agents
+        agents = []
         
-        Returns:
-            Combined list of chunks from all agents
+        if self.vector_agent:
+            agents.append(('vector', self.vector_agent))
         
-        Example:
-            >>> chunks = coordinator._spawn_swarm("What is Python?")
-            >>> print(len(chunks))  # 20-30 chunks from all agents
-        """
-        if self.parallel:
-            # Execute in parallel
-            return self._execute_parallel(query)
+        if self.keyword_agent:
+            agents.append(('keyword', self.keyword_agent))
+        
+        if self.graph_agent:  # ← Just check if exists!
+            agents.append(('graph', self.graph_agent))
+            self.log("Graph search agent included in swarm")
         else:
-            # Execute sequentially
-            return self._execute_sequential(query)
+            self.log("Graph search unavailable", level="warning")
+        
+        # Execute agents
+        all_results = []
+        
+        for agent_name, agent in agents:
+            self.log(f"Executing {agent_name} agent...")
+            try:
+                results = agent.search_async(query, top_k=self.top_k)
+                self.log(f"{agent_name}: {len(results)} chunks")
+                all_results.extend(results)
+            except Exception as e:
+                self.log(f"{agent_name} failed: {e}", level="error")
+        
+        self.log(f"Swarm complete: {len(all_results)} chunks from {len(agents)} agents")
+        
+        return all_results
     
     def _execute_parallel(self, query: str) -> List[Chunk]:
         """
