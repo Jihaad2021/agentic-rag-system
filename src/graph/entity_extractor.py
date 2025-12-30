@@ -52,12 +52,27 @@ class EntityExtractor:
         # ========== ADD CUSTOM TECH PATTERNS ==========
         # Known tech terms often missed by NER
         self.tech_terms = {
-            'python', 'java', 'javascript', 'tensorflow',
-            'pytorch', 'keras', 'react', 'docker',
-            'kubernetes', 'aws', 'gcp', 'azure',
-            'machine learning', 'deep learning', 'ai',
-            'neural network', 'nlp', 'computer vision'
-        }   
+            # Languages
+            'python', 'java', 'javascript', 'c++', 'rust', 'go',
+            
+            # Frameworks
+            'tensorflow', 'pytorch', 'keras', 'react', 'angular', 'vue',
+            'django', 'flask', 'fastapi', 'spring', 'express',
+            
+            # Cloud/Infra
+            'docker', 'kubernetes', 'aws', 'gcp', 'azure',
+            
+            # ML/AI Concepts
+            'machine learning', 'deep learning', 'ai', 'artificial intelligence',
+            'neural network', 'neural networks', 'nlp', 'computer vision',
+            'reinforcement learning', 'supervised learning', 'unsupervised learning',
+            
+            # General Tech Concepts  
+            'development', 'programming', 'software', 'application', 'system',
+            'platform', 'framework', 'library', 'algorithm', 'model',
+            'accuracy', 'performance', 'scalability', 'deployment',
+            'api', 'database', 'architecture', 'microservices'
+        }
     def extract(self, text: str) -> List[Entity]:
         """Extract entities with custom tech term detection."""
         
