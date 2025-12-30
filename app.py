@@ -714,7 +714,7 @@ def process_user_query(query: str):
         # Show user
         st.info(f"🧠 Complexity: {complexity:.2f} | Strategy: {strategy}")
 
-    # Retrieve chunks
+# Retrieve chunks
     with st.spinner("🔍 Retrieving relevant chunks..."):
         try:
             print("🔍 DEBUG: Generating embedding...")
@@ -749,19 +749,19 @@ def process_user_query(query: str):
                     top_k=5
                 )
                 
-                # Convert already Chunk objects, no need to convert again
                 print(f"✅ DEBUG: Multi-hop complete. {len(chunks)} chunks")
                 
             else:
                 # Simple query - normal retrieval
                 print("🔍 DEBUG: Simple query, normal retrieval...")
                 
+                # STEP 1: Vector search
                 search_results = st.session_state.vector_store.search(
                     query_embedding=query_embedding,
                     top_k=10,
                     return_parent=True
                 )
-                print(f"✅ DEBUG: Search complete. Results: {len(search_results)}")
+                print(f"✅ DEBUG: Vector search complete. Results: {len(search_results)}")
                 
                 # Convert to Chunk objects
                 from src.models.agent_state import Chunk
@@ -776,12 +776,45 @@ def process_user_query(query: str):
                         metadata={
                             'filename': result.get('metadata', {}).get('filename', 'uploaded_document'),
                             'chunk_type': result.get('chunk_type', 'child'),
+                            'retrieval_method': 'vector',  # ← NEW: Mark method
                             **result.get('metadata', {})
                         }
                     )
                     chunks.append(chunk)
                 
-                print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects")
+                print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects from vector search")
+                
+                # ========== NEW: STEP 2: Graph search ==========
+                if st.session_state.knowledge_graph:
+                    try:
+                        print("🕸️ DEBUG: Starting graph search...")
+                        
+                        from src.retrieval.graph_retrieval import GraphRetrieval
+                        
+                        graph_retrieval = GraphRetrieval(
+                            knowledge_graph=st.session_state.knowledge_graph,
+                            vector_store=st.session_state.vector_store
+                        )
+                        
+                        graph_chunks = graph_retrieval.search(
+                            query=query,
+                            top_k=5,
+                            expand_neighbors=True
+                        )
+                        
+                        print(f"✅ DEBUG: Graph search complete. Results: {len(graph_chunks)} chunks")
+                        
+                        # Add graph chunks to results
+                        chunks.extend(graph_chunks)
+                        
+                        print(f"✅ DEBUG: Total chunks after combining: {len(chunks)}")
+                        
+                    except Exception as e:
+                        print(f"⚠️ DEBUG: Graph search failed: {e}")
+                        # Continue with vector results only
+                else:
+                    print("⚠️ DEBUG: No knowledge graph available, skipping graph search")
+                # ========== END GRAPH SEARCH ==========
                 
         except Exception as e:
             print(f"❌ DEBUG: Error in retrieval: {e}")
