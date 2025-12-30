@@ -101,6 +101,9 @@ def init_session_state():
         st.session_state.embedder = EmbeddingGenerator()
         print("✅ Embedder reinitialized with EmbeddingGenerator")
 
+    # Knowledge graph ← NEW
+    if 'knowledge_graph' not in st.session_state:
+        st.session_state.knowledge_graph = None
 
 def display_header():
     """Display app header."""
@@ -227,6 +230,30 @@ def sidebar():
         
         st.divider()
         
+        # ============================================
+        # KNOWLEDGE GRAPH STATS (NEW - WEEK 9)
+        # ============================================
+        if st.session_state.knowledge_graph:
+            st.subheader("🕸️ Knowledge Graph")
+            
+            kg = st.session_state.knowledge_graph
+            
+            # Metrics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Nodes", kg.graph.number_of_nodes())
+            with col2:
+                st.metric("Edges", kg.graph.number_of_edges())
+            
+            # Top entities
+            if kg.graph.number_of_nodes() > 0:
+                st.markdown("**Top Entities:**")
+                top_entities = kg.get_top_entities(n=5, metric='degree')
+                for entity, degree in top_entities:
+                    st.text(f"• {entity[:20]}: {int(degree)}")
+
+        st.divider()
+
         # ============================================
         # SAMPLE QUESTIONS (EXISTING - KEPT)
         # ============================================
@@ -451,7 +478,65 @@ def process_uploaded_file(uploaded_file):
         # Embed children
         for child in child_chunks:
             child.embedding = st.session_state.embedder.generate([child.text])[0]
-    
+
+        # ========== NEW: BUILD KNOWLEDGE GRAPH ==========
+        status_text.text("🔨 Building knowledge graph...")
+        progress_bar.progress(75)
+
+        try:
+            from src.graph.entity_extractor import EntityExtractor
+            from src.graph.relationship_extractor import RelationshipExtractor
+            from src.graph.graph_builder import KnowledgeGraph
+            
+            print("🔨 Extracting entities and relationships...")
+            
+            # Initialize extractors
+            entity_extractor = EntityExtractor()
+            rel_extractor = RelationshipExtractor()
+            
+            # Extract from child chunks (more granular)
+            chunk_entities = {}
+            chunk_relationships = {}
+            
+            for i, chunk in enumerate(child_chunks):
+                # Extract entities
+                entities = entity_extractor.extract(chunk.text)
+                chunk_entities[chunk.chunk_id] = entities
+                
+                # Extract relationships
+                if len(entities) >= 2:
+                    rels = rel_extractor.extract_from_sentence(chunk.text, entities)
+                    chunk_relationships[chunk.chunk_id] = rels
+                else:
+                    chunk_relationships[chunk.chunk_id] = []
+                
+                # Progress indicator
+                if (i + 1) % 10 == 0:
+                    print(f"   Processed {i+1}/{len(child_chunks)} chunks")
+            
+            # Build knowledge graph
+            print("🔨 Building knowledge graph structure...")
+            kg = KnowledgeGraph()
+            kg.build_from_chunks(child_chunks, chunk_entities, chunk_relationships)
+            
+            # Save graph
+            graph_path = f"data/graphs/{uploaded_file.name}_graph.pkl"
+            kg.save(graph_path)
+            
+            # Store in session state
+            st.session_state.knowledge_graph = kg
+            
+            print(f"✅ Knowledge graph built: {kg}")
+            
+        except Exception as e:
+            print(f"⚠️  Graph building failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Don't fail entire upload if graph fails
+            st.session_state.knowledge_graph = None
+
+        # ========== END GRAPH BUILDING ==========
+
 
         # Step 5: Store
         status_text.text("💾 Storing in vector database...")
@@ -705,47 +790,71 @@ def process_user_query(query: str):
             st.error(f"Error retrieving chunks: {e}")
             return
         
-    # Generate answer with self-reflection
-    with st.spinner("✍️ Generating answer with self-reflection..."):
-        try:
-            print("🔍 DEBUG: Importing agents...")
-            from src.agents.writer import WriterAgent
-            from src.agents.critic import CriticAgent
-            from src.agents.self_reflection import SelfReflectionLoop
-            from src.models.agent_state import AgentState
-            
-            print("🔍 DEBUG: Initializing agents...")
-            writer = WriterAgent()
-            critic = CriticAgent(quality_threshold=0.7)
-            loop = SelfReflectionLoop(
-                writer=writer,
-                critic=critic,
-                max_iterations=3
-            )
-            print("✅ DEBUG: Agents initialized")
-            
-            print("🔍 DEBUG: Creating AgentState...")
-            state = AgentState(query=query, chunks=chunks)
-            print(f"✅ DEBUG: State created with {len(state.chunks)} chunks")
-            
-            print("🔍 DEBUG: Running self-reflection loop...")
-            result = loop.run(state)
-            print("✅ DEBUG: Self-reflection complete")
-            
-            print(f"📝 DEBUG: Answer length: {len(result.answer)} chars")
-            
-            # Extract metadata
-            reflection_stats = result.metadata.get("self_reflection", {})
-            print(f"📊 DEBUG: Reflection stats: {reflection_stats}")
-            
-        except Exception as e:
-            print(f"❌ DEBUG: Error in generation: {e}")
-            import traceback
-            traceback.print_exc()
-            st.error(f"Error generating answer: {e}")
-            return
-    
-    print("🔍 DEBUG: Preparing citations...")
+    # ========== CONDITIONAL SELF-REFLECTION (OPTIMIZED) ==========
+    # Only use Critic for complex queries to save time
+    if strategy in ["MULTI_HOP", "GRAPH_REASONING"]:
+        # Complex query - full self-reflection
+        with st.spinner("✍️ Generating answer with self-reflection..."):
+            try:
+                print("🔍 DEBUG: Complex query - using self-reflection...")
+                from src.agents.writer import WriterAgent
+                from src.agents.critic import CriticAgent
+                from src.agents.self_reflection import SelfReflectionLoop
+                from src.models.agent_state import AgentState
+                
+                writer = WriterAgent()
+                critic = CriticAgent(quality_threshold=0.7)
+                loop = SelfReflectionLoop(
+                    writer=writer,
+                    critic=critic,
+                    max_iterations=3
+                )
+                
+                state = AgentState(query=query, chunks=chunks)
+                result = loop.run(state)
+                
+                reflection_stats = result.metadata.get("self_reflection", {})
+                print(f"✅ Self-reflection: {reflection_stats}")
+                
+            except Exception as e:
+                print(f"❌ ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                st.error(f"Error generating answer: {e}")
+                return
+
+    else:
+        # Simple query - skip Critic (faster)
+        with st.spinner("✍️ Generating answer..."):
+            try:
+                print("🔍 DEBUG: Simple query - direct generation (no critic)...")
+                from src.agents.writer import WriterAgent
+                from src.models.agent_state import AgentState
+                
+                writer = WriterAgent()
+                state = AgentState(query=query, chunks=chunks)
+                result = writer.run(state)
+                
+                # Fake reflection stats (no critic used)
+                reflection_stats = {
+                    "iterations": 0,
+                    "final_score": 1.0,
+                    "improved": False,
+                    "final_decision": "SKIPPED_SIMPLE_QUERY"
+                }
+                
+                print("✅ Direct generation complete (no reflection)")
+                
+            except Exception as e:
+                print(f"❌ ERROR: {e}")
+                import traceback
+                traceback.print_exc()
+                st.error(f"Error generating answer: {e}")
+                return
+    # ========== END CONDITIONAL SELF-REFLECTION ==========
+
+    print("🔍 DEBUG: Preparing citations...") 
+
     # Prepare citations with chunk metadata
     citations = []
     for i, chunk in enumerate(chunks[:5], 1):
