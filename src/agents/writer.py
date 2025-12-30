@@ -177,13 +177,14 @@ class WriterAgent(BaseAgent):
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             source = chunk.metadata.get('filename', 'unknown')
+            score = chunk.score if chunk.score else 0.0
             context_parts.append(
-                f"[{i}] (Source: {source})\n{chunk.text}\n"
+                f"[{i}] (Source: {source}, Relevance: {score:.2f})\n{chunk.text}\n"
             )
         
         context = "\n".join(context_parts)
         
-        # Create prompt
+        # Create prompt with strict citation rules
         prompt = f"""You are a helpful assistant answering questions based on provided context.
 
 User Question: {query}
@@ -191,15 +192,31 @@ User Question: {query}
 Context (with source references):
 {context}
 
-Instructions:
-1. Answer the question using ONLY information from the provided context
-2. Use inline citations like [1], [2], [3] to reference sources
-3. If multiple sources support a point, cite all: [1][2]
-4. Be comprehensive but concise
-5. If the context doesn't contain enough information, say so clearly
-6. Write in a natural, conversational style
+CRITICAL CITATION RULES:
+1. Cite ONLY the specific chunk(s) that directly support EACH statement
+2. Use inline citations: [1], [2], [3] - NOT grouped like [1][2][3][4]
+3. Each sentence should cite ONLY the chunks it actually uses
+4. If a statement uses ONLY chunk 2, cite [2] alone
+5. If combining info from chunks 2 and 5, cite [2][5]
+6. Different paragraphs will naturally cite DIFFERENT chunks
+7. DO NOT cite all chunks in every paragraph
 
-Answer:"""
+WRONG (don't do):
+"ML is AI subset [1][2]. Uses algorithms [1][2]."
+
+CORRECT (do this):
+"ML is AI subset [1]. Uses algorithms to learn from data [2]."
+
+Instructions:
+1. Answer using ONLY information from context
+2. Cite specific chunks per statement (not all at once)
+3. Be comprehensive but concise
+4. If context lacks info, state clearly
+5. Write naturally and conversationally
+6. DO NOT add "Sources:" section - ONLY inline citations [1], [2]
+7. End your answer immediately after the last sentence - no source list
+
+Answer (inline citations only, no Sources section):"""
         
         # Generate
         try:

@@ -340,7 +340,7 @@ def process_uploaded_file(uploaded_file):
     
     try:
         st.session_state.processing = True
-        
+
         # Create upload directory
         upload_dir = Path("data/uploads")
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -351,6 +351,29 @@ def process_uploaded_file(uploaded_file):
             f.write(uploaded_file.getbuffer())
         
         file_ext = file_path.suffix.upper()
+        
+        # ========== FORCE CLEAN REINIT ==========
+        # Always reinitialize to ensure clean state
+        st.session_state.embedder = EmbeddingGenerator()
+        
+        from src.storage.chroma_store import ChromaVectorStore
+        
+        # Clear if exists
+        if st.session_state.get('vector_store'):
+            st.session_state.vector_store.clear_all()
+            print("🗑️ Cleared old ChromaDB data")
+        
+        # Fresh vector store
+        st.session_state.vector_store = ChromaVectorStore(
+            persist_directory="data/chroma_db"
+        )
+        
+        st.session_state.generator = AnswerGenerator()
+        st.session_state.documents = []
+        st.session_state.messages = []
+        st.session_state.rag_initialized = True
+        print("✅ Reinitialized with clean state")
+        # ========== END REINIT ==========
         
         # Progress bar
         progress_bar = st.progress(0)
@@ -582,6 +605,30 @@ def process_user_query(query: str):
     })
     print(f"✅ DEBUG: User message added. Total messages: {len(st.session_state.messages)}")
     
+    # STEP: Planner Analysis
+    with st.spinner("🧠 Analyzing query complexity..."):
+        from src.agents.planner import PlannerAgent
+        from langchain_anthropic import ChatAnthropic
+        from src.config import get_settings
+
+        settings = get_settings()
+        llm = ChatAnthropic(
+            model=settings.llm_model,
+            api_key=settings.anthropic_api_key
+        )
+        planner = PlannerAgent(llm=llm)
+
+        planner_state = AgentState(query=query)
+        planner_state = planner.run(planner_state)
+        
+        complexity = planner_state.complexity
+        strategy = planner_state.strategy
+        
+        print(f"✅ Planner: Complexity={complexity:.2f}, Strategy={strategy}")
+        
+        # Show user
+        st.info(f"🧠 Complexity: {complexity:.2f} | Strategy: {strategy}")
+
     # Retrieve chunks
     with st.spinner("🔍 Retrieving relevant chunks..."):
         try:
@@ -657,6 +704,7 @@ def process_user_query(query: str):
             traceback.print_exc()
             st.error(f"Error retrieving chunks: {e}")
             return
+        
     # Generate answer with self-reflection
     with st.spinner("✍️ Generating answer with self-reflection..."):
         try:
@@ -698,17 +746,20 @@ def process_user_query(query: str):
             return
     
     print("🔍 DEBUG: Preparing citations...")
-    # Prepare citations
+    # Prepare citations with chunk metadata
     citations = []
     for i, chunk in enumerate(chunks[:5], 1):
         citations.append({
             "source_number": i,
+            "filename": chunk.metadata.get('filename', 'unknown'),
+            "chunk_type": chunk.metadata.get('chunk_type', 'unknown'),
             "text_preview": chunk.text[:200],
             "score": chunk.score or 0.0
         })
     print(f"✅ DEBUG: {len(citations)} citations prepared")
     
     print("🔍 DEBUG: Adding assistant message...")
+    
     # Add assistant message
     st.session_state.messages.append({
         "role": "assistant",
@@ -1074,17 +1125,21 @@ def display_chat_messages():
                     decision = reflection.get("decision", "unknown")
                     st.metric("Status", decision.upper())
             
-            # Show citations
+            # Show citations with chunk type
             if message["role"] == "assistant" and "citations" in message:
                 if message["citations"]:
                     with st.expander("📚 View Sources", expanded=False):
                         for citation in message["citations"]:
-                            st.caption(
-                                f"**Source {citation['source_number']}** "
-                                f"(Relevance: {citation['score']:.2%})"
-                            )
-                            st.text(citation['text_preview'])
+                            # Extract chunk info
+                            chunk_type = citation.get('chunk_type', 'unknown')
+                            chunk_emoji = "📄" if chunk_type == "parent" else "📝"
                             
+                            st.caption(
+                                f"**[{citation['source_number']}] {citation.get('filename', 'unknown')}** "
+                                f"{chunk_emoji} ({chunk_type} chunk, Relevance: {citation['score']:.2%})"
+                            )
+                            st.text(citation['text_preview'])        
+
 def display_chat_input():
     """Display chat input field (must be outside tabs)."""
     
