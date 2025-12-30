@@ -62,3 +62,5 @@ data/bm25_index.pkl
 # ChromaDB data
 data/chroma/
 data/chromadb/
+data/metrics.json
+data/chroma_db/
