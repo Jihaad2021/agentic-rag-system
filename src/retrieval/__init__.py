@@ -1,12 +1,18 @@
 """
-Retrieval package.
+Retrieval components for Agentic RAG System.
 
-Contains BM25 index and retrieval utilities.
+Provides three retrieval agents:
+- VectorSearchAgent: Semantic similarity search
+- KeywordSearchAgent: BM25 keyword search
+- GraphSearchAgent: Knowledge graph-based search
 """
 
-from src.retrieval.bm25_index import BM25Index, BM25IndexError
+from src.retrieval.vector_search import VectorSearchAgent
+from src.retrieval.keyword_search import KeywordSearchAgent
+from src.retrieval.graph_search import GraphSearchAgent
 
 __all__ = [
-    "BM25Index",
-    "BM25IndexError"
+    "VectorSearchAgent",
+    "KeywordSearchAgent",
+    "GraphSearchAgent"
 ]

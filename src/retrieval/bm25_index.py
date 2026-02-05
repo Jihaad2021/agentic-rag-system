@@ -10,8 +10,9 @@ from pathlib import Path
 
 from rank_bm25 import BM25Okapi
 
-from src.ingestion.chunker import Chunk
-from src.storage.vector_store import VectorStore
+from src.models.chunk import Chunk
+from src.storage.chroma_store import ChromaVectorStore
+
 from src.utils.logger import setup_logger
 from src.utils.exceptions import AgenticRAGException
 
@@ -62,13 +63,13 @@ class BM25Index:
     
     def build_from_vector_store(
         self,
-        vector_store: Optional[VectorStore] = None
+        vector_store: Optional[ChromaVectorStore] = None  # ← CHANGE type
     ) -> None:
         """
         Build BM25 index from chunks in vector store.
         
         Args:
-            vector_store: VectorStore instance (creates new if None)
+            vector_store: ChromaVectorStore instance (creates new if None)
         
         Raises:
             BM25IndexError: If index building fails
@@ -83,7 +84,7 @@ class BM25Index:
         try:
             # Get vector store
             if vector_store is None:
-                vector_store = VectorStore()
+                vector_store = ChromaVectorStore()  # ← CHANGE
             
             # Get all chunks from ChromaDB
             total_chunks = vector_store.count()
