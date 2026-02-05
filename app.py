@@ -9,22 +9,32 @@ from pathlib import Path
 from datetime import datetime
 import numpy as np
 
-# Import RAG components
-from rag_poc import (
-    DocumentLoader,
-    Embedder,
-    AnswerGenerator
-)
-
-# Import hierarchical components ← NEW
-from src.ingestion.hierarchical_chunker import HierarchicalChunker
-from src.storage.chroma_store import ChromaVectorStore 
-from src.evaluation.simple_evaluator import SimpleEvaluator
+# ========== NEW IMPORTS (ADD) ==========
+from src.ingestion.document_loader import DocumentLoader
 from src.ingestion.embedder import EmbeddingGenerator
-from src.models.agent_state import Chunk
+from src.agents.writer import WriterAgent  # If AnswerGenerator is replaced
 
-# Keep old components for comparison
-from rag_poc import TextChunker, SimpleVectorStore
+# ========== HIERARCHICAL CHUNKING ==========
+from src.ingestion.hierarchical_chunker import HierarchicalChunker
+
+# ========== DATA MODELS ==========
+from src.models.chunk import Chunk
+from src.models.agent_state import AgentState
+
+# ========== STORAGE ==========
+from src.storage.chroma_store import ChromaVectorStore
+
+# ========== EVALUATION ==========
+from src.evaluation.simple_evaluator import SimpleEvaluator
+
+# ========== GRAPH (Optional) ==========
+try:
+    from src.graph.entity_extractor import EntityExtractor
+    from src.graph.relationship_extractor import RelationshipExtractor
+    from src.graph.graph_builder import KnowledgeGraph
+    GRAPH_AVAILABLE = True
+except ImportError:
+    GRAPH_AVAILABLE = False
 
 # Page configuration
 st.set_page_config(
@@ -33,6 +43,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
 
 # Custom CSS for better styling
 st.markdown("""
@@ -83,7 +94,6 @@ def init_session_state():
         st.session_state.rag_initialized = False
         st.session_state.vector_store = None
         st.session_state.embedder = None
-        st.session_state.generator = None
         st.session_state.parent_chunks = []  # ← NEW
         st.session_state.child_chunks = []   # ← NEW
     
@@ -395,7 +405,6 @@ def process_uploaded_file(uploaded_file):
             persist_directory="data/chroma_db"
         )
         
-        st.session_state.generator = AnswerGenerator()
         st.session_state.documents = []
         st.session_state.messages = []
         st.session_state.rag_initialized = True
@@ -419,7 +428,6 @@ def process_uploaded_file(uploaded_file):
                 persist_directory="data/chroma_db"
             )
             
-            st.session_state.generator = AnswerGenerator()
             st.session_state.rag_initialized = True
         
         # Step 2: Load document
@@ -427,11 +435,20 @@ def process_uploaded_file(uploaded_file):
         progress_bar.progress(25)
         
         loader = DocumentLoader()
-        text = loader.load(str(file_path))
+        doc = loader.load(str(file_path))
+        text = doc.text
         
         # Step 3: Chunk - HIERARCHICAL OR FLAT
         status_text.text("✂️ Chunking text...")
         progress_bar.progress(40)
+        
+        # Prepare metadata
+        chunk_metadata = {
+            'filename': uploaded_file.name,
+            'file_type': file_ext,
+            'chunking_mode': st.session_state.chunking_mode, 
+            **doc.metadata
+        }
         
         if st.session_state.chunking_mode == 'hierarchical':
             # Hierarchical chunking
@@ -440,30 +457,37 @@ def process_uploaded_file(uploaded_file):
                 child_size=500,
                 child_overlap=50
             )
-            parent_chunks, child_chunks = chunker.chunk_text(text)
+            parent_chunks, child_chunks = chunker.chunk_text(
+                text=text,
+                doc_id=doc.doc_id,      # ← PASS
+                metadata=chunk_metadata          # ← PASS
+            )
             
-            status_text.text(f"✂️ Created {len(parent_chunks)} parents, {len(child_chunks)} children...")
+            status_text.text(
+                f"✂️ Created {len(parent_chunks)} parents, "
+                f"{len(child_chunks)} children..."
+            )
+        
+        else:  # 'flat'
+            # Flat mode: Use HierarchicalChunker with same size
+            chunker = HierarchicalChunker(
+                parent_size=500,
+                child_size=500,
+                child_overlap=50
+            )
             
-        else:
-            # Flat chunking
-            chunker = TextChunker(chunk_size=500, chunk_overlap=50)
-            chunks = chunker.chunk_text(text)
+            parent_chunks, child_chunks = chunker.chunk_text(
+                text=text,
+                doc_id=doc.doc_id,      # ← PASS
+                metadata=chunk_metadata          # ← PASS
+            )
             
-            # Convert to Chunk objects for compatibility
-            from src.ingestion.hierarchical_chunker import Chunk
+            # In flat mode, parent = child, so empty parents
             parent_chunks = []
-            child_chunks = [
-                Chunk(
-                    chunk_id=c['chunk_id'],
-                    text=c['text'],
-                    tokens=c.get('tokens', []),
-                    token_count=c['token_count'],
-                    start_idx=c['start_idx'],
-                    end_idx=c['end_idx'],
-                    chunk_type='child'
-                )
-                for c in chunks
-            ]
+            
+            status_text.text(
+                f"✂️ Created {len(child_chunks)} flat chunks..."
+            )
         
         # Step 4: Embeddings
         total_chunks = len(parent_chunks) + len(child_chunks)
@@ -664,233 +688,117 @@ def display_chat_interface():
 
 
 def process_user_query(query: str):
-    """Process user query and generate response with self-reflection."""
+    """Process user query using complete LangGraph workflow."""
     import time
     start_time = time.time()
-
-    from src.models.agent_state import AgentState, Chunk  # ← ADD THIS LINE
+    
+    from src.models.agent_state import AgentState
+    from src.orchestration.complete_workflow import CompleteAgenticRAGWorkflow
+    from src.agents.planner import PlannerAgent
     from src.agents.query_decomposer import QueryDecomposer
-    from src.orchestration.multihop_handler import MultiHopHandler
-
+    from src.agents.retrieval_coordinator import RetrievalCoordinator
+    from src.agents.validator import ValidatorAgent
+    from src.agents.synthesis import SynthesisAgent
+    from src.agents.writer import WriterAgent
+    from src.agents.critic import CriticAgent
+    from langchain_anthropic import ChatAnthropic
+    from src.config import get_settings
+    
     print("\n" + "="*60)
-    print(f"🔍 DEBUG: process_user_query called with: {query}")
+    print(f"🔍 Processing query: {query}")
     print("="*60)
     
     if not st.session_state.rag_initialized:
-        print("❌ DEBUG: RAG not initialized!")
         st.error("Please upload a document first!")
         return
-    
-    print("✅ DEBUG: RAG initialized")
     
     # Add user message
     st.session_state.messages.append({
         "role": "user",
         "content": query
     })
-    print(f"✅ DEBUG: User message added. Total messages: {len(st.session_state.messages)}")
     
-    # STEP: Planner Analysis
-    with st.spinner("🧠 Analyzing query complexity..."):
-        from src.agents.planner import PlannerAgent
-        from langchain_anthropic import ChatAnthropic
-        from src.config import get_settings
-
+    # ========== INITIALIZE AGENTS ==========
+    with st.spinner("⚙️ Initializing workflow..."):
         settings = get_settings()
         llm = ChatAnthropic(
             model=settings.llm_model,
             api_key=settings.anthropic_api_key
         )
+        
+        # Initialize all agents
         planner = PlannerAgent(llm=llm)
-
-        planner_state = AgentState(query=query)
-        planner_state = planner.run(planner_state)
+        decomposer = QueryDecomposer()
         
-        complexity = planner_state.complexity
-        strategy = planner_state.strategy
+        # Retrieval coordinator needs swarm agents
+        from src.retrieval.vector_search import VectorSearchAgent
+        from src.retrieval.keyword_search import KeywordSearchAgent
+        from src.retrieval.graph_search import GraphSearchAgent
         
-        print(f"✅ Planner: Complexity={complexity:.2f}, Strategy={strategy}")
+        vector_agent = VectorSearchAgent(
+            vector_store=st.session_state.vector_store,
+            embedder=st.session_state.embedder
+        )
         
-        # Show user
-        st.info(f"🧠 Complexity: {complexity:.2f} | Strategy: {strategy}")
-
-# Retrieve chunks
-    with st.spinner("🔍 Retrieving relevant chunks..."):
+        keyword_agent = KeywordSearchAgent(
+            vector_store=st.session_state.vector_store
+        )
+        
+        graph_agent = GraphSearchAgent(
+            knowledge_graph=st.session_state.knowledge_graph,
+            vector_store=st.session_state.vector_store
+        ) if st.session_state.knowledge_graph else None
+        
+        coordinator = RetrievalCoordinator(
+            vector_agent=vector_agent,
+            keyword_agent=keyword_agent,
+            graph_agent=graph_agent
+        )
+        
+        validator = ValidatorAgent(llm=llm)
+        synthesis = SynthesisAgent()
+        writer = WriterAgent(llm=llm)
+        critic = CriticAgent(llm=llm, quality_threshold=0.7)
+        
+        # Create complete workflow
+        workflow = CompleteAgenticRAGWorkflow(
+            planner=planner,
+            decomposer=decomposer,
+            coordinator=coordinator,
+            validator=validator,
+            synthesis=synthesis,
+            writer=writer,
+            critic=critic
+        )
+        
+        print("✅ Workflow initialized")
+    
+    # ========== RUN WORKFLOW ==========
+    with st.spinner("🚀 Running complete workflow..."):
         try:
-            print("🔍 DEBUG: Generating embedding...")
-            query_embedding = st.session_state.embedder.generate_query_embedding(query)
-            print(f"✅ DEBUG: Embedding generated. Length: {len(query_embedding)}")
+            # Single workflow call!
+            result = workflow.run(query)
             
-            # NEW: Check if decomposition needed
-            print("🔍 DEBUG: Checking if decomposition needed...")
-            from src.agents.query_decomposer import QueryDecomposer
-            from src.orchestration.multihop_handler import MultiHopHandler
+            print(f"✅ Workflow complete!")
+            print(f"   Strategy: {result.strategy}")
+            print(f"   Complexity: {result.complexity:.2f}")
+            print(f"   Chunks: {len(result.chunks)}")
+            print(f"   Retrieval rounds: {result.retrieval_round}")
+            print(f"   Validation: {result.validation_status}")
+            print(f"   Critic score: {result.critic_score:.2f}")
+            print(f"   Regenerations: {result.metadata.get('regeneration_count', 0)}")
             
-            decomposer = QueryDecomposer()
-            temp_state = AgentState(query=query)
-            temp_state = decomposer.run(temp_state)
-            
-            if temp_state.sub_queries and len(temp_state.sub_queries) > 1:
-                # Multi-hop processing
-                print(f"🔀 DEBUG: Multi-hop detected. {len(temp_state.sub_queries)} sub-queries")
-                
-                st.info(f"🔀 Complex query detected. Decomposed into {len(temp_state.sub_queries)} sub-questions")
-                
-                with st.expander("👁️ View Sub-questions"):
-                    for i, sq in enumerate(temp_state.sub_queries, 1):
-                        st.write(f"{i}. {sq}")
-                
-                # Process all sub-queries
-                handler = MultiHopHandler()
-                chunks = handler.process_sub_queries(
-                    temp_state.sub_queries,
-                    st.session_state.vector_store,
-                    st.session_state.embedder,
-                    top_k=5
-                )
-                
-                print(f"✅ DEBUG: Multi-hop complete. {len(chunks)} chunks")
-                
-            else:
-                # Simple query - normal retrieval
-                print("🔍 DEBUG: Simple query, normal retrieval...")
-                
-                # STEP 1: Vector search
-                search_results = st.session_state.vector_store.search(
-                    query_embedding=query_embedding,
-                    top_k=10,
-                    return_parent=True
-                )
-                print(f"✅ DEBUG: Vector search complete. Results: {len(search_results)}")
-                
-                # Convert to Chunk objects
-                from src.models.agent_state import Chunk
-                
-                chunks = []
-                for result in search_results:
-                    chunk = Chunk(
-                        text=result['text'],
-                        doc_id='unknown',
-                        chunk_id=result['chunk_id'],
-                        score=result['score'],
-                        metadata={
-                            'filename': result.get('metadata', {}).get('filename', 'uploaded_document'),
-                            'chunk_type': result.get('chunk_type', 'child'),
-                            'retrieval_method': 'vector',  # ← NEW: Mark method
-                            **result.get('metadata', {})
-                        }
-                    )
-                    chunks.append(chunk)
-                
-                print(f"✅ DEBUG: Converted to {len(chunks)} Chunk objects from vector search")
-                
-                # ========== NEW: STEP 2: Graph search ==========
-                if st.session_state.knowledge_graph:
-                    try:
-                        print("🕸️ DEBUG: Starting graph search...")
-                        
-                        from src.retrieval.graph_retrieval import GraphRetrieval
-                        
-                        graph_retrieval = GraphRetrieval(
-                            knowledge_graph=st.session_state.knowledge_graph,
-                            vector_store=st.session_state.vector_store
-                        )
-                        
-                        graph_chunks = graph_retrieval.search(
-                            query=query,
-                            top_k=5,
-                            expand_neighbors=True
-                        )
-                        
-                        print(f"✅ DEBUG: Graph search complete. Results: {len(graph_chunks)} chunks")
-                        
-                        # Add graph chunks to results
-                        chunks.extend(graph_chunks)
-                        
-                        print(f"✅ DEBUG: Total chunks after combining: {len(chunks)}")
-                        
-                    except Exception as e:
-                        print(f"⚠️ DEBUG: Graph search failed: {e}")
-                        # Continue with vector results only
-                else:
-                    print("⚠️ DEBUG: No knowledge graph available, skipping graph search")
-                # ========== END GRAPH SEARCH ==========
-                
         except Exception as e:
-            print(f"❌ DEBUG: Error in retrieval: {e}")
+            print(f"❌ Workflow failed: {e}")
             import traceback
             traceback.print_exc()
-            st.error(f"Error retrieving chunks: {e}")
+            st.error(f"Error: {e}")
             return
-        
-    # ========== CONDITIONAL SELF-REFLECTION (OPTIMIZED) ==========
-    # Only use Critic for complex queries to save time
-    if strategy in ["MULTI_HOP", "GRAPH_REASONING"]:
-        # Complex query - full self-reflection
-        with st.spinner("✍️ Generating answer with self-reflection..."):
-            try:
-                print("🔍 DEBUG: Complex query - using self-reflection...")
-                from src.agents.writer import WriterAgent
-                from src.agents.critic import CriticAgent
-                from src.agents.self_reflection import SelfReflectionLoop
-                from src.models.agent_state import AgentState
-                
-                writer = WriterAgent()
-                critic = CriticAgent(quality_threshold=0.7)
-                loop = SelfReflectionLoop(
-                    writer=writer,
-                    critic=critic,
-                    max_iterations=3
-                )
-                
-                state = AgentState(query=query, chunks=chunks)
-                result = loop.run(state)
-                
-                reflection_stats = result.metadata.get("self_reflection", {})
-                print(f"✅ Self-reflection: {reflection_stats}")
-                
-            except Exception as e:
-                print(f"❌ ERROR: {e}")
-                import traceback
-                traceback.print_exc()
-                st.error(f"Error generating answer: {e}")
-                return
-
-    else:
-        # Simple query - skip Critic (faster)
-        with st.spinner("✍️ Generating answer..."):
-            try:
-                print("🔍 DEBUG: Simple query - direct generation (no critic)...")
-                from src.agents.writer import WriterAgent
-                from src.models.agent_state import AgentState
-                
-                writer = WriterAgent()
-                state = AgentState(query=query, chunks=chunks)
-                result = writer.run(state)
-                
-                # Fake reflection stats (no critic used)
-                reflection_stats = {
-                    "iterations": 0,
-                    "final_score": 1.0,
-                    "improved": False,
-                    "final_decision": "SKIPPED_SIMPLE_QUERY"
-                }
-                
-                print("✅ Direct generation complete (no reflection)")
-                
-            except Exception as e:
-                print(f"❌ ERROR: {e}")
-                import traceback
-                traceback.print_exc()
-                st.error(f"Error generating answer: {e}")
-                return
-    # ========== END CONDITIONAL SELF-REFLECTION ==========
-
-    print("🔍 DEBUG: Preparing citations...") 
-
-    # Prepare citations with chunk metadata
+    
+    # ========== PREPARE RESPONSE ==========
+    # Prepare citations
     citations = []
-    for i, chunk in enumerate(chunks[:5], 1):
+    for i, chunk in enumerate(result.chunks[:5], 1):
         citations.append({
             "source_number": i,
             "filename": chunk.metadata.get('filename', 'unknown'),
@@ -898,28 +806,23 @@ def process_user_query(query: str):
             "text_preview": chunk.text[:200],
             "score": chunk.score or 0.0
         })
-    print(f"✅ DEBUG: {len(citations)} citations prepared")
-    
-    print("🔍 DEBUG: Adding assistant message...")
     
     # Add assistant message
     st.session_state.messages.append({
         "role": "assistant",
         "content": result.answer,
         "citations": citations,
-        "self_reflection": {
-            "iterations": reflection_stats.get("iterations", 0),
-            "final_score": reflection_stats.get("final_score", 0.0),
-            "improved": reflection_stats.get("improved", False),
-            "decision": reflection_stats.get("final_decision", "unknown")
+        "workflow_metadata": {
+            "complexity": result.complexity,
+            "strategy": result.strategy.value,
+            "retrieval_rounds": result.retrieval_round,
+            "validation_score": result.validation_score,
+            "critic_score": result.critic_score,
+            "regenerations": result.metadata.get('regeneration_count', 0),
+            "decision": result.critic_decision.value
         }
     })
     
-    print(f"✅ DEBUG: Assistant message added. Total messages: {len(st.session_state.messages)}")
-    print("="*60)
-    print("✅ DEBUG: process_user_query COMPLETE")
-    print("="*60 + "\n")
-
     # Calculate latency
     latency = time.time() - start_time
     
@@ -928,18 +831,17 @@ def process_user_query(query: str):
         from src.monitoring.performance_tracker import PerformanceTracker
         st.session_state.performance_tracker = PerformanceTracker()
     
-    is_multihop = temp_state.sub_queries and len(temp_state.sub_queries) > 1
-    
     st.session_state.performance_tracker.track_query(
         query=query,
         latency=latency,
-        chunks_retrieved=len(chunks),
-        strategy="multi_hop" if is_multihop else "simple",
-        iterations=reflection_stats.get("iterations", 0),
+        chunks_retrieved=len(result.chunks),
+        strategy=result.strategy.value,
+        iterations=result.metadata.get('regeneration_count', 0),
         cache_hit=False
     )
     
-    print(f"⏱️  Query processed in {latency:.2f}s")
+    print(f"⏱️  Total latency: {latency:.2f}s")
+    print("="*60 + "\n")
 
 def display_footer():
     """Display footer with info."""
@@ -1199,7 +1101,7 @@ def display_document_preview():
                 # Load and show preview (optional - can be slow)
                 if st.button("📖 Load Content Preview", key=f"preview_{selected_doc}"):
                     try:
-                        from rag_poc import DocumentLoader
+                        from src.ingestion.document_loader import DocumentLoader
                         loader = DocumentLoader()
                         text = loader.load(doc['path'])
                         
