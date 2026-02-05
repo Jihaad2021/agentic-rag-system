@@ -6,33 +6,13 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
-
+from src.models.chunk import Chunk 
 
 class Strategy(str, Enum):
     """Query execution strategies"""
     SIMPLE = "simple"
     MULTIHOP = "multihop"
     GRAPH = "graph"
-
-
-class Chunk(BaseModel):
-    """Document chunk with metadata"""
-    text: str = Field(..., description="Chunk text content")
-    doc_id: str = Field(..., description="Source document ID")
-    chunk_id: str = Field(..., description="Unique chunk identifier")
-    embedding: Optional[List[float]] = None
-    score: Optional[float] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    
-    @validator('score')
-    def validate_score(cls, v):
-        if v is not None and not (0.0 <= v <= 1.0):
-            raise ValueError("Score must be between 0.0 and 1.0")
-        return v
-    
-    class Config:
-        arbitrary_types_allowed = True
-
 
 class AgentState(BaseModel):
     """Shared state passed between agents"""
