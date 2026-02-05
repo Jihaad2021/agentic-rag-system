@@ -148,6 +148,55 @@ class DocumentLoader:
                 details={"path": file_path, "error": str(e)}
             ) from e
     
+    def count_pages(self, file_path: str) -> int:
+        """
+        Count pages in document.
+        
+        Args:
+            file_path: Path to document
+        
+        Returns:
+            Number of pages (estimated for non-PDF)
+        
+        Example:
+            >>> loader = DocumentLoader()
+            >>> pages = loader.count_pages("document.pdf")
+            >>> print(pages)  # 10
+        """
+        path = Path(file_path)
+        
+        if not path.exists():
+            self.logger.warning(f"File not found: {file_path}")
+            return 1
+        
+        file_ext = path.suffix.lower()
+        
+        try:
+            if file_ext == ".pdf":
+                # PDF: Actual page count
+                from pypdf import PdfReader
+                reader = PdfReader(path)
+                return len(reader.pages)
+            
+            elif file_ext == ".docx":
+                # DOCX: Estimate (paragraphs / 30)
+                from docx import Document as DocxDocument
+                doc = DocxDocument(path)
+                paragraph_count = len(doc.paragraphs)
+                estimated_pages = max(1, paragraph_count // 30)
+                return estimated_pages
+            
+            else:  # .txt, .md
+                # Text: Estimate (lines / 40)
+                with open(path, 'r', encoding='utf-8') as f:
+                    line_count = len(f.readlines())
+                estimated_pages = max(1, line_count // 40)
+                return estimated_pages
+        
+        except Exception as e:
+            self.logger.warning(f"Could not count pages for {path.name}: {e}")
+            return 1
+
     def _load_pdf(self, path: Path) -> str:
         """
         Load text from PDF file.

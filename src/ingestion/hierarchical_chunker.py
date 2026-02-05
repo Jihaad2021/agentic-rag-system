@@ -8,24 +8,9 @@ This provides flexibility:
 - Retrieve parent chunks (full context)
 """
 
+from src.models.chunk import Chunk
 from typing import List, Dict, Any, Tuple
 import tiktoken
-from dataclasses import dataclass
-
-
-@dataclass
-class Chunk:
-    """Chunk data structure."""
-    chunk_id: str
-    text: str
-    tokens: List[int]
-    token_count: int
-    start_idx: int
-    end_idx: int
-    chunk_type: str  # 'parent' or 'child'
-    parent_id: str = None  # For child chunks
-    children_ids: List[str] = None  # For parent chunks
-
 
 class HierarchicalChunker:
     """
@@ -58,7 +43,12 @@ class HierarchicalChunker:
         self.child_overlap = child_overlap
         self.encoding = tiktoken.get_encoding(encoding_name)
     
-    def chunk_text(self, text: str) -> Tuple[List[Chunk], List[Chunk]]:
+    def chunk_text(
+        self, 
+        text: str,
+        doc_id: str = "unknown",  # ← ADD
+        metadata: Dict[str, Any] = None  # ← ADD
+    ) -> Tuple[List[Chunk], List[Chunk]]:
         """
         Create hierarchical chunks from text.
         
@@ -98,20 +88,25 @@ class HierarchicalChunker:
             parent = Chunk(
                 chunk_id=parent_id,
                 text=parent_text,
+                doc_id=doc_id,  # ← USE
                 tokens=parent_tokens,
                 token_count=len(parent_tokens),
                 start_idx=start_idx,
                 end_idx=end_idx,
                 chunk_type='parent',
-                children_ids=[]
+                children_ids=[],
+                metadata=metadata or {}  # ← USE
             )
             
-            # Create child chunks from this parent
+            # ✅ PASS doc_id and metadata to _create_children
             children = self._create_children(
                 parent_tokens=parent_tokens,
                 parent_id=parent_id,
-                parent_start_idx=start_idx
+                parent_start_idx=start_idx,
+                doc_id=doc_id,              # ← ADD
+                metadata=metadata           # ← ADD
             )
+
             
             # Link children to parent
             parent.children_ids = [child.chunk_id for child in children]
@@ -132,7 +127,9 @@ class HierarchicalChunker:
         self,
         parent_tokens: List[int],
         parent_id: str,
-        parent_start_idx: int
+        parent_start_idx: int,
+        doc_id: str = "unknown",          # ← ADD
+        metadata: Dict[str, Any] = None   # ← ADD
     ) -> List[Chunk]:
         """
         Create child chunks from a parent chunk.
@@ -161,12 +158,14 @@ class HierarchicalChunker:
             child = Chunk(
                 chunk_id=child_id,
                 text=child_text,
+                doc_id=doc_id,                      # ← USE doc_id
                 tokens=child_tokens,
                 token_count=len(child_tokens),
                 start_idx=parent_start_idx + start_idx,
                 end_idx=parent_start_idx + end_idx,
                 chunk_type='child',
-                parent_id=parent_id
+                parent_id=parent_id,
+                metadata=metadata or {}              # ← USE metadata
             )
             
             children.append(child)
