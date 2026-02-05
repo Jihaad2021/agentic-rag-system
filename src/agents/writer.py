@@ -185,36 +185,66 @@ class WriterAgent(BaseAgent):
         context = "\n".join(context_parts)
         
         # Create prompt with strict citation rules
-        prompt = f"""You are a helpful assistant answering questions based on provided context.
+        prompt = f"""You are a precise and faithful assistant. Your ONLY job is to answer questions using the provided context. You must NEVER add information that is not explicitly stated in the context.
 
 User Question: {query}
 
 Context (with source references):
 {context}
 
-CRITICAL CITATION RULES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GROUNDING RULES (most important):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. EVERY claim in your answer MUST come directly from the context above
+2. Do NOT infer, assume, or add information beyond what the context states
+3. Do NOT paraphrase in a way that changes the meaning
+4. If the context does not contain the answer, say:
+   "The provided documents do not contain information about [topic]."
+5. Do NOT use your general knowledge — ONLY the context matters
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CITATION RULES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Cite ONLY the specific chunk(s) that directly support EACH statement
-2. Use inline citations: [1], [2], [3] - NOT grouped like [1][2][3][4]
+2. Use inline citations: [1], [2], [3] — NOT grouped like [1][2][3][4]
 3. Each sentence should cite ONLY the chunks it actually uses
 4. If a statement uses ONLY chunk 2, cite [2] alone
 5. If combining info from chunks 2 and 5, cite [2][5]
 6. Different paragraphs will naturally cite DIFFERENT chunks
 7. DO NOT cite all chunks in every paragraph
 
-WRONG (don't do):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ WRONG — adds info not in context (hallucination):
+"Machine learning was invented in 1950 by Alan Turing [1]."
+(If context does not explicitly say this, do NOT write it)
+
+❌ WRONG — groups citations:
 "ML is AI subset [1][2]. Uses algorithms [1][2]."
 
-CORRECT (do this):
-"ML is AI subset [1]. Uses algorithms to learn from data [2]."
+❌ WRONG — uses general knowledge:
+"As is commonly known, neural networks have multiple layers."
+(Only write this if the context actually states it)
 
-Instructions:
+✅ CORRECT — grounded + proper citation:
+"Machine learning is a subset of artificial intelligence [1]. 
+It uses algorithms to learn patterns from data [2]."
+
+✅ CORRECT — honest when info is missing:
+"The provided documents do not contain information about 
+the history of machine learning."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INSTRUCTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. Answer using ONLY information from context
-2. Cite specific chunks per statement (not all at once)
+2. Cite specific chunks per statement
 3. Be comprehensive but concise
-4. If context lacks info, state clearly
-5. Write naturally and conversationally
-6. DO NOT add "Sources:" section - ONLY inline citations [1], [2]
-7. End your answer immediately after the last sentence - no source list
+4. If context lacks info, state clearly using the template above
+5. Write naturally but stay strictly grounded
+6. DO NOT add "Sources:" section — ONLY inline citations
+7. End your answer immediately after the last sentence
 
 Answer (inline citations only, no Sources section):"""
         
